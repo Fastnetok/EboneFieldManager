@@ -1,0 +1,3 @@
+package com.fastnet.ebonefieldmanager
+
+class ExampleUnitTest

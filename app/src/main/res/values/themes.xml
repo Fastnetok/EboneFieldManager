@@ -1,0 +1,29 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style
+        name="Theme.EboneFieldManager"
+        parent="Theme.Material3.Light.NoActionBar">
+
+        <item name="colorPrimary">
+            #00897B
+        </item>
+
+        <item name="colorPrimaryVariant">
+            #00695C
+        </item>
+
+        <item name="colorOnPrimary">
+            #FFFFFF
+        </item>
+
+        <item name="android:statusBarColor">
+            #00695C
+        </item>
+
+        <item name="android:navigationBarColor">
+            #FFFFFF
+        </item>
+
+    </style>
+
+</resources>
