@@ -21,6 +21,11 @@ class TrackingService : Service() {
     private lateinit var locationHelper:
             LocationHelper
 
+    // NEW: handles GPS history logging (accuracy/movement/speed filters +
+    // hybrid interval) — writes to a separate "tracking/" Firebase node.
+    // Does not affect live tracking or geofence logic below.
+    private lateinit var locationTrackingHistory: LocationTrackingHistory
+
     private var isInsideGeoFence =
         false
     private fun showGeoFenceNotification(
@@ -126,6 +131,10 @@ class TrackingService : Service() {
         locationHelper =
             LocationHelper(this)
 
+        // NEW: initialize the history logger
+        locationTrackingHistory =
+            LocationTrackingHistory(this)
+
         startLiveTracking()
 
         NotificationListener(this)
@@ -147,6 +156,11 @@ class TrackingService : Service() {
                 saveLiveLocation(it)
 
                 checkGeoFence(it)
+
+                // NEW: also feed the same location into history logging.
+                // This function internally decides (via its own filters)
+                // whether this particular point is worth saving.
+                locationTrackingHistory.onLocationUpdate(it)
             }
     }
 
