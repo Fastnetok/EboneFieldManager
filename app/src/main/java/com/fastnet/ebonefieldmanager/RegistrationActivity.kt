@@ -6,6 +6,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.google.firebase.auth.FirebaseAuth
 
 class RegistrationActivity : AppCompatActivity() {
 
@@ -70,33 +71,63 @@ class RegistrationActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
+            submitButton.isEnabled = false
+            statusText.text = "Registering..."
+
             val androidId =
                 Settings.Secure.getString(
                     contentResolver,
                     Settings.Secure.ANDROID_ID
                 )
 
-            FirebaseManager.registerEmployee(
-                androidId,
-                employeeName,
-                mobileNumber
-            )
+            // NEW: sign in anonymously first (or reuse existing session)
+            // so the app has an auth.uid before writing to Firebase.
+            // This uid is what the security rules use to verify the
+            // device later, so it MUST be saved together with the
+            // registration data.
+            val auth = FirebaseAuth.getInstance()
 
-            EmployeeSession.setEmployeeName(
-                employeeName
-            )
+            fun proceedWithUid(uid: String) {
+                FirebaseManager.registerEmployee(
+                    androidId,
+                    employeeName,
+                    mobileNumber,
+                    uid
+                )
 
-            RegistrationManager.saveRegistration(
-                this,
-                employeeName,
-                mobileNumber
-            )
+                EmployeeSession.setEmployeeName(
+                    employeeName
+                )
 
-            statusText.text =
-                "Request Sent To Admin"
+                RegistrationManager.saveRegistration(
+                    this,
+                    employeeName,
+                    mobileNumber
+                )
 
-            submitButton.isEnabled =
-                false
+                statusText.text =
+                    "Request Sent To Admin"
+            }
+
+            val existingUid = auth.currentUser?.uid
+            if (existingUid != null) {
+                proceedWithUid(existingUid)
+            } else {
+                auth.signInAnonymously()
+                    .addOnSuccessListener { result ->
+                        val uid = result.user?.uid
+                        if (uid != null) {
+                            proceedWithUid(uid)
+                        } else {
+                            statusText.text = "Sign-in failed, try again"
+                            submitButton.isEnabled = true
+                        }
+                    }
+                    .addOnFailureListener {
+                        statusText.text = "Sign-in failed, try again"
+                        submitButton.isEnabled = true
+                    }
+            }
         }
     }
 }

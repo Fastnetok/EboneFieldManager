@@ -22,7 +22,7 @@ object FirebaseManager {
                 Settings.Secure.ANDROID_ID
             )
 
-        val data = hashMapOf(
+        val data = hashMapOf<String, Any>(
 
             "androidId" to androidId,
 
@@ -39,10 +39,16 @@ object FirebaseManager {
 
         )
 
+        // FIX: was .setValue(data) — that REPLACES the entire
+        // employees/{androidId} node on every single location update,
+        // wiping out any field not listed here (e.g. "bikeAverage" set
+        // from the Admin Panel's Fuel Settings screen). .updateChildren()
+        // only writes/merges the given keys and leaves every other field
+        // (bikeAverage, etc.) untouched.
         database
             .getReference("employees")
             .child(androidId)
-            .setValue(data)
+            .updateChildren(data)
 
     }
 
@@ -100,13 +106,20 @@ object FirebaseManager {
 
     }
 
+    // CHANGED: now takes the Firebase Auth uid so the security rules can
+    // later verify that only this same signed-in device can turn its own
+    // PendingDevices entry into writes on employees/, tracking/, etc.
+    // The admin app must copy this "uid" field over when it approves the
+    // device and moves the record into ApprovedDevices.
     fun registerEmployee(
 
         androidId: String,
 
         employeeName: String,
 
-        mobileNumber: String
+        mobileNumber: String,
+
+        uid: String
 
     ) {
 
@@ -119,6 +132,8 @@ object FirebaseManager {
             "mobileNumber" to mobileNumber,
 
             "status" to "Pending",
+
+            "uid" to uid,
 
             "createdAt" to
                     System.currentTimeMillis()

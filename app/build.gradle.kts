@@ -81,6 +81,7 @@ dependencies {
 
     implementation(
         "androidx.recyclerview:recyclerview:1.3.2"
+
     )
 
     implementation(
@@ -95,6 +96,10 @@ dependencies {
 
     implementation(
         "com.google.firebase:firebase-messaging-ktx:24.0.1"
+    )
+
+    implementation(
+        "com.google.firebase:firebase-auth-ktx:22.3.1"
     )
 
 }
