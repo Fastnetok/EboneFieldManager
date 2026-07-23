@@ -32,9 +32,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var liveLocationText: TextView
     private var currentComplaint: Complaint? = null
 
+    private var lastSeenComplaintId: String? = null
+
+    // Tracks whether the app is currently visible to the user.
+    // Used so that "seen" is only marked when the employee is actually looking at the screen.
+    private var isAppInForeground = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        setContentView(R.layout.activity_main)
+
+        VersionChecker.checkForUpdate(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
@@ -217,6 +227,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        isAppInForeground = true
+        // Employee ne screen unlock/app open ki hai — agar Active Complaint mojood hai to abhi "seen" mark karo
+        markCurrentComplaintSeen()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isAppInForeground = false
+    }
+
+    /**
+     * Dashboard par jo bhi Top/Active Complaint is waqt currentComplaint mein set hai,
+     * usay Firebase par seenByEmployee = true aur seenTime = Server Time ke sath mark karta hai.
+     * Sirf tab chalta hai jab App Foreground mein ho aur is complaint ko pehle "seen" mark
+     * na kiya gaya ho (taake baar baar Firebase write na ho).
+     */
+    private fun markCurrentComplaintSeen() {
+        val complaint = currentComplaint ?: return
+        if (!isAppInForeground) return
+        if (complaint.complaintId == lastSeenComplaintId) return
+
+        val complaintRef = com.google.firebase.database.FirebaseDatabase
+            .getInstance()
+            .getReference("complaints")
+            .child(complaint.complaintId)
+
+        complaintRef.child("seenByEmployee").setValue(true)
+        complaintRef.child("seenTime")
+            .setValue(com.google.firebase.database.ServerValue.TIMESTAMP)
+
+        lastSeenComplaintId = complaint.complaintId
+    }
+
     private fun refreshDashboard() {
         val employeeName = EmployeeSession.getEmployeeName()
 
@@ -257,6 +302,9 @@ class MainActivity : AppCompatActivity() {
                             customerNameText.text = complaint.userId
                             customerAddressText.text = complaint.address
                             customerPhoneText.text = complaint.phoneNumber
+
+                            // Active Complaint ab Dashboard par visible hai — "seen" mark karne ki koshish karo
+                            markCurrentComplaintSeen()
                         } else {
                             currentComplaint = null
                             customerNameText.text = "No Complaint"

@@ -24,7 +24,11 @@ data class Complaint(
 
     var resolvedTime: Long = 0,
 
-    var displayOrder: Long = 0
+    var displayOrder: Long = 0,
+
+    var seenByEmployee: Boolean = false,
+
+    var seenTime: Long = 0
 
 
 )
