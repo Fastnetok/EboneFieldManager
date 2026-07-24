@@ -13,6 +13,26 @@ android {
 
     compileSdk = 34
 
+    signingConfigs {
+
+        create("release") {
+
+            val isGitHub = System.getenv("GITHUB_ACTIONS") == "true"
+
+            storeFile = if (isGitHub) {
+                file("keystore.jks")
+            } else {
+                file("D:/AndroidKeys/EboneReleaseKey.jks")
+            }
+
+            storePassword = System.getenv("STORE_PASSWORD") ?: "kknetworkpakistan"
+
+            keyAlias = System.getenv("KEY_ALIAS") ?: "ebone"
+
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "kknetworkpakistan"
+        }
+    }
+
     defaultConfig {
 
         applicationId =
@@ -24,7 +44,7 @@ android {
 
         versionCode = 1
 
-        versionName = "1.0"
+        versionName = "1.0.1"
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
@@ -33,6 +53,8 @@ android {
     buildTypes {
 
         release {
+
+            signingConfig = signingConfigs.getByName("release")
 
             isMinifyEnabled = false
 
@@ -100,6 +122,11 @@ dependencies {
 
     implementation(
         "com.google.firebase:firebase-auth-ktx:22.3.1"
+    )
+
+    // NETWORKING - required by VersionChecker.kt for GitHub API calls
+    implementation(
+        "com.squareup.okhttp3:okhttp:4.12.0"
     )
 
 }
