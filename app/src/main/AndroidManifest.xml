@@ -30,6 +30,11 @@
 
     <uses-permission
         android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- NEW: needed for in-app APK download + auto-install-prompt update flow -->
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="true"
         android:label="Ebone Field Manager"
@@ -88,6 +93,17 @@
             </intent-filter>
 
         </service>
+
+        <!-- NEW: required for in-app APK install (Update Now flow) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
 
     </application>
 

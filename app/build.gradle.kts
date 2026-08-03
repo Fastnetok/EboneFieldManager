@@ -42,15 +42,23 @@ android {
 
         targetSdk = 34
 
-        versionCode = 3
+        versionCode = 4
 
-        versionName = "1.0.3"
+        versionName = "1.0.4"
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+
+        // NEW: debug builds now use the SAME keystore as release, so a
+        // debug APK built on this PC and one built by GitHub Actions
+        // always share the same signature — required for in-app updates
+        // to install over an existing copy instead of "App not installed".
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
 
         release {
 
