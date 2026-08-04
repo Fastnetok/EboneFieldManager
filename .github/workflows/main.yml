@@ -58,6 +58,5 @@ jobs:
           name: Version ${{ env.VERSION_NAME }}
           files: app/build/outputs/apk/release/*.apk
           generate_release_notes: true
-        env:
           env:
             GITHUB_TOKEN: ${{ github.token }}
