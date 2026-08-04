@@ -32,7 +32,7 @@ import kotlin.concurrent.thread
 object VersionChecker {
 
     private const val GITHUB_API =
-        "https://api.github.com/repos/Fastnetok/EboneFieldManager/releases/latest"
+        "https://api.github.com/repos/Fastnetok/EboneFieldManager/releases"
 
     private val client = OkHttpClient()
 
@@ -52,6 +52,9 @@ object VersionChecker {
 
     private fun checkGitHubRelease(context: Context, currentVersionName: String) {
         android.util.Log.d("GitHubUpdate", "checkGitHubRelease Started")
+        (context as? android.app.Activity)?.runOnUiThread {
+            android.widget.Toast.makeText(context, "Checking for updates…", android.widget.Toast.LENGTH_SHORT).show()
+        }
 
         thread {
             try {
@@ -59,10 +62,27 @@ object VersionChecker {
                 val response = client.newCall(request).execute()
 
                 android.util.Log.d("GitHubUpdate", "Response Code = ${response.code}")
-                if (!response.isSuccessful) return@thread
+
+                if (!response.isSuccessful) {
+                    (context as? android.app.Activity)?.runOnUiThread {
+                        android.widget.Toast.makeText(context, "Update check failed: HTTP ${response.code}", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
 
                 val body = response.body?.string() ?: return@thread
-                val json = JSONObject(body)
+                // /releases returns an array — pick the first non-prerelease
+                val jsonArray = org.json.JSONArray(body)
+                if (jsonArray.length() == 0) return@thread
+                var latestRelease: org.json.JSONObject? = null
+                for (i in 0 until jsonArray.length()) {
+                    val r = jsonArray.getJSONObject(i)
+                    if (!r.optBoolean("prerelease", false) && !r.optBoolean("draft", false)) {
+                        latestRelease = r
+                        break
+                    }
+                }
+                val json = latestRelease ?: return@thread
                 val tagName = json.getString("tag_name")
                 val releaseNotes = json.optString("body", "")
                 val downloadUrl = json.getJSONArray("assets")
@@ -73,6 +93,10 @@ object VersionChecker {
 
                 android.util.Log.d("GitHubUpdate", "Installed = $currentVersionName, Latest = $latestVersionName")
 
+                (context as? android.app.Activity)?.runOnUiThread {
+                    android.widget.Toast.makeText(context, "Installed: $currentVersionName | Latest: $latestVersionName", android.widget.Toast.LENGTH_LONG).show()
+                }
+
                 if (isNewerVersion(latestVersionName, currentVersionName)) {
                     (context as? android.app.Activity)?.runOnUiThread {
                         showUpdateDialog(context, tagName, releaseNotes, downloadUrl)
@@ -80,6 +104,9 @@ object VersionChecker {
                 }
             } catch (e: Exception) {
                 android.util.Log.e("GitHubUpdate", "Error", e)
+                (context as? android.app.Activity)?.runOnUiThread {
+                    android.widget.Toast.makeText(context, "Update error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
