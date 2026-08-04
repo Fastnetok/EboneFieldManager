@@ -8,10 +8,19 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.firebase.auth.FirebaseAuth
 
+/**
+ * CHANGED: Employee now registers with Name + a one-time 6-digit PIN
+ * (pre-created by Admin via AddEmployeeActivity in Ebone Admin Panel) —
+ * same pattern as CustomerIDApp's Customer ID + PIN. This fixes the
+ * duplicate-employee bug, because the PIN (not the Android ID) is now the
+ * unique key, and it's explicitly device-locked once claimed — a second
+ * device can never claim the same PIN again.
+ */
 class RegistrationActivity : AppCompatActivity() {
 
     private lateinit var nameInput: EditText
     private lateinit var mobileInput: EditText
+    private lateinit var pinInput: EditText
     private lateinit var submitButton: Button
     private lateinit var statusText: TextView
 
@@ -31,6 +40,11 @@ class RegistrationActivity : AppCompatActivity() {
         mobileInput =
             findViewById(
                 R.id.mobileInput
+            )
+
+        pinInput =
+            findViewById(
+                R.id.pinInput
             )
 
         submitButton =
@@ -55,19 +69,23 @@ class RegistrationActivity : AppCompatActivity() {
                     .toString()
                     .trim()
 
+            val pin =
+                pinInput.text
+                    .toString()
+                    .trim()
+
             if (employeeName.isEmpty()) {
-
-                statusText.text =
-                    "Enter Employee Name"
-
+                statusText.text = "Enter Employee Name"
                 return@setOnClickListener
             }
 
             if (mobileNumber.isEmpty()) {
+                statusText.text = "Enter Mobile Number"
+                return@setOnClickListener
+            }
 
-                statusText.text =
-                    "Enter Mobile Number"
-
+            if (pin.length != 6) {
+                statusText.text = "Enter the 6-digit PIN given by Admin"
                 return@setOnClickListener
             }
 
@@ -80,33 +98,31 @@ class RegistrationActivity : AppCompatActivity() {
                     Settings.Secure.ANDROID_ID
                 )
 
-            // NEW: sign in anonymously first (or reuse existing session)
-            // so the app has an auth.uid before writing to Firebase.
-            // This uid is what the security rules use to verify the
-            // device later, so it MUST be saved together with the
-            // registration data.
             val auth = FirebaseAuth.getInstance()
 
             fun proceedWithUid(uid: String) {
-                FirebaseManager.registerEmployee(
-                    androidId,
-                    employeeName,
-                    mobileNumber,
-                    uid
-                )
-
-                EmployeeSession.setEmployeeName(
-                    employeeName
-                )
-
-                RegistrationManager.saveRegistration(
-                    this,
-                    employeeName,
-                    mobileNumber
-                )
-
-                statusText.text =
-                    "Request Sent To Admin"
+                FirebaseManager.claimEmployeePin(
+                    pin = pin,
+                    enteredName = employeeName,
+                    mobileNumber = mobileNumber,
+                    androidId = androidId,
+                    uid = uid
+                ) { success, message ->
+                    runOnUiThread {
+                        if (success) {
+                            EmployeeSession.setEmployeeName(employeeName)
+                            RegistrationManager.saveRegistration(
+                                this,
+                                employeeName,
+                                mobileNumber
+                            )
+                            statusText.text = "Request Sent To Admin"
+                        } else {
+                            statusText.text = message
+                            submitButton.isEnabled = true
+                        }
+                    }
+                }
             }
 
             val existingUid = auth.currentUser?.uid

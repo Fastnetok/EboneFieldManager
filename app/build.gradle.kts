@@ -52,10 +52,6 @@ android {
 
     buildTypes {
 
-        // NEW: debug builds now use the SAME keystore as release, so a
-        // debug APK built on this PC and one built by GitHub Actions
-        // always share the same signature — required for in-app updates
-        // to install over an existing copy instead of "App not installed".
         debug {
             signingConfig = signingConfigs.getByName("release")
         }
@@ -111,14 +107,11 @@ dependencies {
 
     implementation(
         "androidx.recyclerview:recyclerview:1.3.2"
-
     )
 
     implementation(
         "com.google.android.gms:play-services-location:21.3.0"
     )
-
-    // FIREBASE
 
     implementation(
         "com.google.firebase:firebase-database-ktx:21.0.0"
@@ -132,10 +125,20 @@ dependencies {
         "com.google.firebase:firebase-auth-ktx:22.3.1"
     )
 
-    // NETWORKING - required by VersionChecker.kt for GitHub API calls
     implementation(
         "com.squareup.okhttp3:okhttp:4.12.0"
     )
 
+    androidTestImplementation(
+        "androidx.test.ext:junit:1.1.5"
+    )
+
+    androidTestImplementation(
+        "androidx.test.espresso:espresso-core:3.5.1"
+    )
+
+    testImplementation(
+        "junit:junit:4.13.2"
+    )
+
 }
-// test

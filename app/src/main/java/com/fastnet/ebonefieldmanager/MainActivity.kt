@@ -34,9 +34,18 @@ class MainActivity : AppCompatActivity() {
 
     private var lastSeenComplaintId: String? = null
 
-    // Tracks whether the app is currently visible to the user.
-    // Used so that "seen" is only marked when the employee is actually looking at the screen.
     private var isAppInForeground = false
+
+    // NEW: TrackingService must never be started before location permission is
+    // actually confirmed granted (previously it was started immediately after
+    // just REQUESTING permission, without waiting for the result — causing a
+    // crash on Android 14 when the request hadn't been answered yet).
+    private var trackingServiceStarted = false
+    private var hasProceeded = false
+
+    companion object {
+        private const val LOCATION_PERMISSION_REQUEST_CODE = 2001
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +53,49 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
+        // HARD GATE: app does not proceed at all until Location permission
+        // is granted — no dashboard, no Firebase listeners, nothing else
+        // loads until the user grants it.
+        if (!hasLocationPermission()) {
+            showBlockingPermissionDialog()
+            return
+        }
+
+        proceedWithNormalStartup()
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val hasFine = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return hasFine || hasCoarse
+    }
+
+    /**
+     * Non-cancelable — no back button, no tap-outside-to-dismiss. The only
+     * way past this screen is granting Location permission. If the user
+     * taps "Deny" on the system dialog, this same screen reappears.
+     */
+    private fun showBlockingPermissionDialog() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Location Permission Required")
+            .setMessage("Ebone Field Manager cannot work without Location access — it's needed to track your visits and show your live position on the map. Please grant Location permission to continue.")
+            .setCancelable(false)
+            .setPositiveButton("Grant Permission") { _, _ ->
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                    LOCATION_PERMISSION_REQUEST_CODE
+                )
+            }
+            .show()
+    }
+
+    private fun proceedWithNormalStartup() {
+        hasProceeded = true
         VersionChecker.checkForUpdate(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -86,11 +138,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-        val permissionManager = PermissionManager(this)
-        if (!permissionManager.hasLocationPermission()) {
-            permissionManager.requestLocationPermission(this)
-        }
-
+        // Location permission is already confirmed granted (gated at the
+        // top of onCreate) — just check that GPS itself is switched on.
         val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         if (!isGpsEnabled) {
@@ -122,15 +171,9 @@ class MainActivity : AppCompatActivity() {
 
         refreshDashboard()
 
-        val serviceIntent = Intent(this, TrackingService::class.java)
-        startService(serviceIntent)
-
-        val locationHelper = LocationHelper(this)
-        locationHelper.startLocationUpdates {
-            runOnUiThread {
-                liveLocationText.text = "LAT: ${it.latitude}\nLNG: ${it.longitude}"
-            }
-        }
+        // FIXED: was unconditional `startService(...)` + `startLocationUpdates`
+        // right here, regardless of whether permission was actually granted.
+        startTrackingIfPermitted()
 
         profileImage.setOnClickListener {
             val intent = Intent(
@@ -227,10 +270,70 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Only starts TrackingService + live location updates once
+     * ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION is actually confirmed
+     * granted — never optimistically. Safe to call multiple times
+     * (e.g. from onCreate AND onRequestPermissionsResult); guarded by
+     * trackingServiceStarted so the service isn't started twice.
+     */
+    private fun startTrackingIfPermitted() {
+        if (trackingServiceStarted) return
+
+        val hasFine = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasFine && !hasCoarse) return // still not granted — wait for onRequestPermissionsResult
+
+        trackingServiceStarted = true
+
+        val serviceIntent = Intent(this, TrackingService::class.java)
+        startService(serviceIntent)
+
+        val locationHelper = LocationHelper(this)
+        locationHelper.startLocationUpdates {
+            runOnUiThread {
+                liveLocationText.text = "LAT: ${it.latitude}\nLNG: ${it.longitude}"
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
+            if (hasLocationPermission()) {
+                proceedWithNormalStartup()
+            } else {
+                // Still denied — show the blocking screen again. There is
+                // no way past this activity without granting Location.
+                showBlockingPermissionDialog()
+            }
+            return
+        }
+
+        // Any other permission (e.g. POST_NOTIFICATIONS, or one requested
+        // inside startTrackingIfPermitted()'s own flow) — just re-check.
+        startTrackingIfPermitted()
+    }
+
     override fun onResume() {
         super.onResume()
         isAppInForeground = true
-        // Employee ne screen unlock/app open ki hai — agar Active Complaint mojood hai to abhi "seen" mark karo
+        // Catches the case where the user granted Location via Settings
+        // while the app was paused/blocked on the gate screen.
+        if (!hasProceeded && hasLocationPermission()) {
+            proceedWithNormalStartup()
+        }
+        startTrackingIfPermitted()
         markCurrentComplaintSeen()
     }
 

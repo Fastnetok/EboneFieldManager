@@ -49,6 +49,17 @@
             android:textSize="18sp"
             android:padding="12dp"/>
 
+        <EditText
+            android:id="@+id/pinInput"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:layout_marginTop="15dp"
+            android:hint="Enter 6-digit PIN (from Admin)"
+            android:inputType="number"
+            android:maxLength="6"
+            android:textSize="18sp"
+            android:padding="12dp"/>
+
         <Button
             android:id="@+id/submitButton"
             android:layout_width="match_parent"

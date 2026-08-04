@@ -39,12 +39,6 @@ object FirebaseManager {
 
         )
 
-        // FIX: was .setValue(data) — that REPLACES the entire
-        // employees/{androidId} node on every single location update,
-        // wiping out any field not listed here (e.g. "bikeAverage" set
-        // from the Admin Panel's Fuel Settings screen). .updateChildren()
-        // only writes/merges the given keys and leaves every other field
-        // (bikeAverage, etc.) untouched.
         database
             .getReference("employees")
             .child(androidId)
@@ -106,48 +100,69 @@ object FirebaseManager {
 
     }
 
-    // CHANGED: now takes the Firebase Auth uid so the security rules can
-    // later verify that only this same signed-in device can turn its own
-    // PendingDevices entry into writes on employees/, tracking/, etc.
-    // The admin app must copy this "uid" field over when it approves the
-    // device and moves the record into ApprovedDevices.
-    fun registerEmployee(
-
-        androidId: String,
-
-        employeeName: String,
-
+    /**
+     * CHANGED (again): now writes straight to "ApprovedDevices" instead of
+     * "PendingDevices" — the PIN itself (created by Admin via
+     * AddEmployeeActivity) already IS the authorization, so a second manual
+     * "Approve" step in the Admin Panel would just be redundant friction.
+     * Requires the matching ApprovedDevices Firebase Rule to allow a
+     * first-time self-write (see chat for the rules update).
+     */
+    fun claimEmployeePin(
+        pin: String,
+        enteredName: String,
         mobileNumber: String,
-
-        uid: String
-
+        androidId: String,
+        uid: String,
+        onResult: (success: Boolean, message: String) -> Unit
     ) {
+        val pinRef = database.getReference("employeePins").child(pin)
 
-        val data = hashMapOf(
+        pinRef.get()
+            .addOnSuccessListener { snapshot ->
+                if (!snapshot.exists()) {
+                    onResult(false, "Invalid PIN — please check with Admin.")
+                    return@addOnSuccessListener
+                }
 
-            "androidId" to androidId,
+                val status = snapshot.child("status").getValue(String::class.java) ?: "PENDING"
+                val linkedAndroidId = snapshot.child("linkedAndroidId").getValue(String::class.java)
+                val employeeName = snapshot.child("employeeName").getValue(String::class.java) ?: enteredName
 
-            "employeeName" to employeeName,
+                if (status == "CLAIMED" && linkedAndroidId != null && linkedAndroidId != androidId) {
+                    onResult(false, "This PIN has already been used on another device.")
+                    return@addOnSuccessListener
+                }
 
-            "mobileNumber" to mobileNumber,
+                val pinUpdate = mapOf(
+                    "status" to "CLAIMED",
+                    "linkedAndroidId" to androidId,
+                    "linkedUid" to uid,
+                    "mobileNumber" to mobileNumber
+                )
+                pinRef.updateChildren(pinUpdate)
 
-            "status" to "Pending",
+                val approvedDeviceData = hashMapOf(
+                    "androidId" to androidId,
+                    "employeeName" to employeeName,
+                    "mobileNumber" to mobileNumber,
+                    "status" to "Approved",
+                    "uid" to uid,
+                    "createdAt" to System.currentTimeMillis()
+                )
 
-            "uid" to uid,
-
-            "createdAt" to
-                    System.currentTimeMillis()
-
-        )
-
-        database
-            .getReference(
-                "PendingDevices"
-            )
-            .child(
-                androidId
-            )
-            .setValue(data)
-
+                database.getReference("ApprovedDevices")
+                    .child(androidId)
+                    .setValue(approvedDeviceData)
+                    .addOnSuccessListener {
+                        onResult(true, "Registered — Welcome!")
+                    }
+                    .addOnFailureListener { e ->
+                        onResult(false, "Registration failed: ${e.message}")
+                    }
+            }
+            .addOnFailureListener { e ->
+                onResult(false, "Could not verify PIN: ${e.message}")
+            }
     }
 }
