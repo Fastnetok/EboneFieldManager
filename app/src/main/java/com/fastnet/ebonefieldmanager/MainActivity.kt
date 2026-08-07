@@ -175,6 +175,10 @@ class MainActivity : AppCompatActivity() {
         // right here, regardless of whether permission was actually granted.
         startTrackingIfPermitted()
 
+        findViewById<android.view.View>(R.id.biometricAttendanceButton)?.setOnClickListener {
+            startActivity(Intent(this, AttendanceActivity::class.java))
+        }
+
         profileImage.setOnClickListener {
             val intent = Intent(
                 Intent.ACTION_PICK,

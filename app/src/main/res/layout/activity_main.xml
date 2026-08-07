@@ -12,14 +12,11 @@
         android:padding="16dp">
 
         <!-- TOP BAR -->
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal">
-
-            <!-- ROUND DP -->
 
             <ImageView
                 android:id="@+id/profileImage"
@@ -30,8 +27,6 @@
                 android:scaleType="centerCrop"
                 android:src="@mipmap/ic_launcher" />
 
-            <!-- TITLE -->
-
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -41,8 +36,6 @@
                 android:textColor="#111111"
                 android:textSize="20sp"
                 android:textStyle="bold" />
-
-            <!-- ONLINE RIGHT -->
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -64,8 +57,6 @@
                     android:textSize="12sp"
                     android:textStyle="bold" />
 
-                <!-- LIVE GPS STATUS -->
-
                 <TextView
                     android:id="@+id/liveLocationText"
                     android:layout_width="wrap_content"
@@ -76,18 +67,14 @@
                     android:textSize="10sp" />
 
             </LinearLayout>
-
         </LinearLayout>
 
         <!-- COUNTERS -->
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
             android:orientation="horizontal">
-
-            <!-- PENDING -->
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -116,10 +103,7 @@
                     android:textColor="#666666"
                     android:textSize="14sp"
                     android:textStyle="bold" />
-
             </LinearLayout>
-
-            <!-- RESOLVED -->
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -148,13 +132,10 @@
                     android:textColor="#666666"
                     android:textSize="14sp"
                     android:textStyle="bold" />
-
             </LinearLayout>
-
         </LinearLayout>
 
         <!-- ACTIVE COMPLAINT -->
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -203,7 +184,6 @@
         </LinearLayout>
 
         <!-- BUTTONS -->
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -220,9 +200,7 @@
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
 
-            <Space
-                android:layout_width="8dp"
-                android:layout_height="1dp" />
+            <Space android:layout_width="8dp" android:layout_height="1dp" />
 
             <Button
                 android:id="@+id/whatsappButton"
@@ -233,7 +211,6 @@
                 android:text="WHATSAPP"
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
-
         </LinearLayout>
 
         <LinearLayout
@@ -252,9 +229,7 @@
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
 
-            <Space
-                android:layout_width="8dp"
-                android:layout_height="1dp" />
+            <Space android:layout_width="8dp" android:layout_height="1dp" />
 
             <Button
                 android:id="@+id/completeComplaintButton"
@@ -265,9 +240,9 @@
                 android:text="RESOLVED"
                 android:textColor="#FFFFFF"
                 android:textStyle="bold" />
-
         </LinearLayout>
 
+        <!-- LOGOUT -->
         <Button
             android:id="@+id/logoutButton"
             android:layout_width="match_parent"
@@ -278,6 +253,67 @@
             android:textColor="#FFFFFF"
             android:textStyle="bold" />
 
-    </LinearLayout>
+        <!-- BIOMETRIC ATTENDANCE — Logout Ke Neeche (6mm extra margin) -->
+        <LinearLayout
+            android:id="@+id/biometricAttendanceButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="36dp"
+            android:layout_marginBottom="16dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground">
 
+            <!-- Outer rings + fingerprint icon -->
+            <FrameLayout
+                android:layout_width="110dp"
+                android:layout_height="110dp"
+                android:layout_gravity="center">
+
+                <!-- Outermost ring -->
+                <View
+                    android:layout_width="110dp"
+                    android:layout_height="110dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_biometric_ring_outer" />
+
+                <!-- Middle ring -->
+                <View
+                    android:layout_width="96dp"
+                    android:layout_height="96dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_biometric_ring_mid" />
+
+                <!-- Main Circle with REAL fingerprint icon -->
+                <LinearLayout
+                    android:layout_width="80dp"
+                    android:layout_height="80dp"
+                    android:layout_gravity="center"
+                    android:gravity="center"
+                    android:background="@drawable/bg_biometric_circle">
+
+                    <ImageView
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:src="@drawable/ic_fingerprint"
+                        android:scaleType="fitCenter" />
+
+                </LinearLayout>
+            </FrameLayout>
+
+            <!-- Text below icon -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center"
+                android:text="Use fingerprint or face ID&#10;to mark your check-out"
+                android:textColor="#9E9E9E"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
 </ScrollView>

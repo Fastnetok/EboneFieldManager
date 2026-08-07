@@ -15,7 +15,7 @@
           <targets>
             <Target type="DEFAULT_BOOT">
               <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=1474040574012434" />
+                <DeviceId pluginId="Wireless" identifier="serviceName=adb-39240DLJG002YL-lGB4BB" />
               </handle>
             </Target>
           </targets>

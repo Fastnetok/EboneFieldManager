@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!-- Center dot -->
+    <path
+        android:pathData="M24,22 C24,21 25,20 26,20 C27,20 28,21 28,22 C28,23 27,24 26,24 C25,24 24,23 24,22Z"
+        android:fillColor="#1565C0"/>
+
+    <!-- Inner ring -->
+    <path
+        android:pathData="M20,22 C20,18 22.7,15 26,15 C29.3,15 32,18 32,22 C32,26 29.3,29 26,29"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+
+    <!-- Middle ring -->
+    <path
+        android:pathData="M16,22 C16,14 20.5,8 26,8 C31.5,8 36,14 36,22 C36,30 31.5,36 26,36 C22,36 19,34 17,31"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+
+    <!-- Outer ring -->
+    <path
+        android:pathData="M12,22 C12,11 18.3,2 26,2 C33.7,2 40,11 40,22 C40,33 33.7,42 26,42 C19,42 13,37 11,30"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+
+    <!-- Top curve -->
+    <path
+        android:pathData="M18,14 C19.5,10 22.5,8 26,8"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+
+    <!-- Bottom left curve -->
+    <path
+        android:pathData="M14,32 C13,29 12,26 12,22"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+
+</vector>

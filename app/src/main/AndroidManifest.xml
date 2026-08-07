@@ -64,6 +64,8 @@
         <activity
             android:name=".RegistrationActivity" />
 
+        <activity android:name=".AttendanceActivity" android:exported="false" />
+
         <!-- COMPLAINT LIST -->
 
         <activity
