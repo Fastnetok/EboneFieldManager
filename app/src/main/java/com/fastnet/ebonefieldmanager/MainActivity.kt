@@ -123,6 +123,21 @@ class MainActivity : AppCompatActivity() {
             Settings.Secure.ANDROID_ID
         )
 
+// ← YEH NEECHE ADD KAREIN
+// App version save for admin tracking
+        val appVersion = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        } catch (e: Exception) { "" }
+        if (appVersion.isNotEmpty()) {
+            com.google.firebase.database.FirebaseDatabase.getInstance()
+                .getReference("ApprovedDevices")
+                .child(androidId)
+                .updateChildren(mapOf(
+                    "appVersion" to appVersion,
+                    "lastVersionUpdate" to System.currentTimeMillis()
+                ))
+        }
+
         com.google.firebase.database.FirebaseDatabase
             .getInstance()
             .getReference("ApprovedDevices")

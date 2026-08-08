@@ -46,11 +46,29 @@ class AttendanceActivity : AppCompatActivity() {
 
     private var isCheckedIn = false
     private var isCheckedOut = false
+    private var earlyLeaveRequestKey = ""
+    private var earlyLeaveApproved = false
+    private var earlyLeaveListener: com.google.firebase.database.ValueEventListener? = null
+    private var complaintAddress = ""
+    private var complaintUser = ""
+    private var preShiftMinutes = 60
+    private var complaintRadiusMeters = 500.0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        employeeName = EmployeeSession.getEmployeeName()
         deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        employeeName = EmployeeSession.getEmployeeName()
+        // Also try loading from Firebase if name is empty
+        if (employeeName.isEmpty()) {
+            com.google.firebase.database.FirebaseDatabase.getInstance()
+                .getReference("employees").child(deviceId).child("employeeName")
+                .get().addOnSuccessListener { snap ->
+                    val fbName = snap.value?.toString() ?: ""
+                    if (fbName.isNotEmpty()) employeeName = fbName
+                }
+        }
+        complaintAddress = intent.getStringExtra("complaintAddress") ?: ""
+        complaintUser = intent.getStringExtra("complaintUser") ?: ""
         todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
         setContentView(buildLayout())
         loadOfficeSettings()
@@ -413,6 +431,58 @@ class AttendanceActivity : AppCompatActivity() {
             .addOnFailureListener { showInfo("Failed to load data.") }
     }
 
+    private fun listenForLeaveApproval(requestKey: String) {
+        if (requestKey.isEmpty()) return
+        val ref = com.google.firebase.database.FirebaseDatabase.getInstance()
+            .getReference("earlyLeaveRequests")
+            .child(requestKey)
+        earlyLeaveListener = object : com.google.firebase.database.ValueEventListener {
+            override fun onDataChange(snap: com.google.firebase.database.DataSnapshot) {
+                val status = snap.child("status").value?.toString() ?: return
+                when (status) {
+                    "APPROVED" -> {
+                        earlyLeaveApproved = true
+                        runOnUiThread {
+                            androidx.appcompat.app.AlertDialog.Builder(this@AttendanceActivity)
+                                .setTitle("Request Approved")
+                                .setMessage("Your early leave request has been approved. You can now check out.")
+                                .setPositiveButton("OK") { _, _ ->
+                                    loadTodayAttendance()
+                                }
+                                .setCancelable(false)
+                                .show()
+                        }
+                    }
+                    "REJECTED" -> {
+                        earlyLeaveApproved = false
+                        earlyLeaveRequestKey = ""
+                        runOnUiThread {
+                            androidx.appcompat.app.AlertDialog.Builder(this@AttendanceActivity)
+                                .setTitle("Request Rejected")
+                                .setMessage("Your early leave request was rejected. Please contact your admin.")
+                                .setPositiveButton("OK", null)
+                                .setCancelable(false)
+                                .show()
+                        }
+                    }
+                }
+            }
+            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
+        }
+        ref.addValueEventListener(earlyLeaveListener!!)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (earlyLeaveRequestKey.isNotEmpty() && earlyLeaveListener != null) {
+            com.google.firebase.database.FirebaseDatabase.getInstance()
+                .getReference("earlyLeaveRequests")
+                .child(deviceId)
+                .child(earlyLeaveRequestKey)
+                .removeEventListener(earlyLeaveListener!!)
+        }
+    }
+
     private fun showInfo(msg: String) {
         AlertDialog.Builder(this)
             .setMessage(msg)
@@ -446,13 +516,13 @@ class AttendanceActivity : AppCompatActivity() {
             !isCheckedIn -> {
                 val windowOpen = Calendar.getInstance().apply {
                     set(Calendar.HOUR_OF_DAY, officeStartHour)
-                    set(Calendar.MINUTE, (officeStartMinute - gracePeriodMinutes).coerceAtLeast(0))
+                    set(Calendar.MINUTE, (officeStartMinute - preShiftMinutes).coerceAtLeast(0))
                     set(Calendar.SECOND, 0)
                     set(Calendar.MILLISECOND, 0)
                 }
                 if (now.before(windowOpen)) {
                     val h = if (officeStartHour > 12) officeStartHour - 12 else officeStartHour
-                    val m = (officeStartMinute - gracePeriodMinutes).coerceAtLeast(0)
+                    val m = (officeStartMinute - preShiftMinutes).coerceAtLeast(0)
                     val startAmPm = if (officeStartHour >= 12) "PM" else "AM"
                     showInfo("Check-in opens at $h:${String.format(Locale.getDefault(), "%02d", m)} $startAmPm")
                     return
@@ -543,24 +613,71 @@ class AttendanceActivity : AppCompatActivity() {
     }
 
     private fun checkComplaintThenProceed(isCheckIn: Boolean, location: android.location.Location?) {
-        db.getReference("complaints")
-            .orderByChild("assignedTo")
-            .equalTo(employeeName)
-            .get()
-            .addOnSuccessListener { snap ->
-                val hasActiveComplaint = snap.children.any { child ->
-                    val status = child.child("status").value?.toString() ?: ""
-                    !status.equals("Resolved", ignoreCase = true)
+        if (complaintAddress.isEmpty()) {
+            tvInstruction.text = "Tap to mark your attendance"
+            showInfo("Location not verified. You must be at office or have an active complaint to mark attendance.")
+            return
+        }
+
+        tvInstruction.text = "Verifying complaint location..."
+
+        Thread {
+            try {
+                val geocoder = android.location.Geocoder(this, java.util.Locale.getDefault())
+                val query = "$complaintAddress, Okara"
+                var lat = 0.0; var lng = 0.0; var found = false
+
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    geocoder.getFromLocationName(query, 1) { results ->
+                        if (results.isNotEmpty()) {
+                            lat = results[0].latitude; lng = results[0].longitude; found = true
+                        }
+                        latch.countDown()
+                    }
+                    latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+                } else {
+                    @Suppress("DEPRECATION")
+                    val results = geocoder.getFromLocationName(query, 1)
+                    if (!results.isNullOrEmpty()) {
+                        lat = results[0].latitude; lng = results[0].longitude; found = true
+                    }
                 }
 
-                if (hasActiveComplaint) {
-                    tvInstruction.text = "Field location verified (Active Complaint). Place your finger."
-                    launchBiometric(isCheckIn)
-                } else {
+                val smartRadius = when {
+                    complaintAddress.contains("colony", ignoreCase = true) ||
+                            complaintAddress.contains("block", ignoreCase = true) -> 600.0
+                    complaintAddress.contains("road", ignoreCase = true) ||
+                            complaintAddress.contains("street", ignoreCase = true) -> 400.0
+                    complaintAddress.contains("chowk", ignoreCase = true) ||
+                            complaintAddress.contains("bazar", ignoreCase = true) -> 300.0
+                    complaintAddress.contains("complex", ignoreCase = true) ||
+                            complaintAddress.contains("town", ignoreCase = true) -> 800.0
+                    else -> complaintRadiusMeters
+                }
+
+                val allowed = if (found && location != null) {
+                    val dist = FloatArray(1)
+                    android.location.Location.distanceBetween(location.latitude, location.longitude, lat, lng, dist)
+                    dist[0] <= smartRadius
+                } else found  // If no GPS yet but address resolved, allow
+
+                runOnUiThread {
+                    if (allowed) {
+                        tvInstruction.text = "Complaint area verified. Place your finger."
+                        launchBiometric(isCheckIn)
+                    } else {
+                        tvInstruction.text = "Tap to mark your attendance"
+                        showInfo("You are not in the complaint area ($complaintAddress). Please go to the location first.")
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
                     tvInstruction.text = "Tap to mark your attendance"
-                    showInfo("Location not verified. You must be at office or have an active complaint to mark attendance.")
+                    showInfo("Could not verify location. Please try again.")
                 }
             }
+        }.start()
     }
 
     // ───────────────── BIOMETRIC ─────────────────
@@ -630,7 +747,21 @@ class AttendanceActivity : AppCompatActivity() {
         )
         db.getReference("attendance").child(deviceId).child(todayKey)
             .setValue(data)
-            .addOnSuccessListener { loadTodayAttendance() }
+            .addOnSuccessListener {
+                // Clear early leave checkout flag on re-check-in
+                db.getReference("attendance").child(deviceId).child(todayKey)
+                    .updateChildren(mapOf("earlyLeaveCheckout" to false))
+                // Notify admin
+                val locType = if (complaintAddress.isNotEmpty()) "Field: $complaintAddress" else "Office"
+                db.getReference("adminNotifications").push().setValue(mapOf(
+                    "message" to "$employeeName checked in — $locType",
+                    "employeeName" to employeeName,
+                    "deviceId" to deviceId,
+                    "timestamp" to System.currentTimeMillis(),
+                    "read" to false
+                ))
+                loadTodayAttendance()
+            }
             .addOnFailureListener { err -> showInfo("Save failed: ${err.message}") }
     }
 
@@ -647,6 +778,11 @@ class AttendanceActivity : AppCompatActivity() {
             "checkOutTimestamp" to now.timeInMillis
         )
         if (now.after(overtimeThreshold)) updates["status"] = "OVERTIME"
+        // If early leave approved, mark as re-joinable
+        if (earlyLeaveApproved) {
+            updates["earlyLeaveCheckout"] = true
+            updates["earlyLeaveCheckoutAt"] = now.timeInMillis
+        }
 
         db.getReference("attendance").child(deviceId).child(todayKey)
             .updateChildren(updates)
@@ -657,6 +793,14 @@ class AttendanceActivity : AppCompatActivity() {
     // ───────────────── EARLY LEAVE ─────────────────
 
     private fun showEarlyLeaveDialog() {
+        if (earlyLeaveApproved) {
+            showInfo("Early leave request is already approved. You can check out now.")
+            return
+        }
+        if (earlyLeaveRequestKey.isNotEmpty() && !earlyLeaveApproved) {
+            showInfo("Request already sent. Waiting for admin approval.")
+            return
+        }
         if (!isCheckedIn) { showInfo("You haven't checked in yet."); return }
         if (isCheckedOut) { showInfo("You have already checked out."); return }
 
@@ -716,15 +860,35 @@ class AttendanceActivity : AppCompatActivity() {
                     "employeeName" to employeeName,
                     "reason" to selectedReason,
                     "note" to note,
-                    "requestTime" to System.currentTimeMillis(),
+                    "requestedAt" to System.currentTimeMillis(),
                     "status" to "PENDING",
                     "date" to todayKey
                 )
-                db.getReference("earlyLeaveRequests").push().setValue(data)
-                    .addOnSuccessListener {
-                        showInfo("Request sent. Reason: $selectedReason. Please wait for admin approval before leaving.")
-                    }
-                    .addOnFailureListener { e -> showInfo("Failed: ${e.message}") }
+                val sendRequest: (String) -> Unit = { finalName ->
+                    val dataWithName = data.toMutableMap()
+                    dataWithName["employeeName"] = finalName
+                    val reqRef = db.getReference("earlyLeaveRequests").push()
+                    reqRef.setValue(dataWithName)
+                        .addOnSuccessListener {
+                            earlyLeaveRequestKey = reqRef.key ?: ""
+                            showInfo("Request sent. Waiting for admin approval...")
+                            listenForLeaveApproval(earlyLeaveRequestKey)
+                        }
+                        .addOnFailureListener { e -> showInfo("Failed: ${e.message}") }
+                }
+                if (employeeName.isNotEmpty()) {
+                    sendRequest(employeeName)
+                } else {
+                    db.getReference("employees").child(deviceId)
+                        .child("employeeName").get()
+                        .addOnSuccessListener { snap ->
+                            val name = snap.value?.toString() ?: "Employee"
+                            employeeName = name
+                            sendRequest(name)
+                        }
+                        .addOnFailureListener { sendRequest("Employee") }
+                }
+
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -739,6 +903,8 @@ class AttendanceActivity : AppCompatActivity() {
             officeEndHour = (snap.child("endHour").value as? Long)?.toInt() ?: 22
             officeEndMinute = (snap.child("endMinute").value as? Long)?.toInt() ?: 0
             gracePeriodMinutes = (snap.child("gracePeriodMinutes").value as? Long)?.toInt() ?: 15
+            preShiftMinutes = (snap.child("preShiftMinutes").value as? Long)?.toInt() ?: 60
+            complaintRadiusMeters = (snap.child("complaintRadiusMeters").value as? Number)?.toDouble() ?: 500.0
 
             val sH = if (officeStartHour > 12) officeStartHour - 12 else officeStartHour
             val eH = if (officeEndHour > 12) officeEndHour - 12 else officeEndHour
@@ -779,7 +945,7 @@ class AttendanceActivity : AppCompatActivity() {
                         }
                         btnAction.isEnabled = true
                         tvInstruction.text = "Tap to mark Check-In\nFingerprint or Face ID required"
-                        btnEarlyLeave.visibility = View.GONE
+                        btnEarlyLeave.visibility = android.view.View.GONE
                     }
                     !isCheckedOut -> {
                         btnAction.text = "Mark Check-Out"
@@ -791,19 +957,37 @@ class AttendanceActivity : AppCompatActivity() {
                         }
                         btnAction.isEnabled = true
                         tvInstruction.text = "Checked in! Tap to mark Check-Out\nFingerprint or Face ID required"
-                        btnEarlyLeave.visibility = View.VISIBLE
+                        btnEarlyLeave.visibility = android.view.View.VISIBLE
                     }
                     else -> {
-                        btnAction.text = "Attendance Complete"
-                        // ── COMPLETE COLOR: Change "#9E9E9E" to any color ──
-                        btnAction.background = GradientDrawable().apply {
-                            shape = GradientDrawable.RECTANGLE
-                            cornerRadius = 12f * resources.displayMetrics.density
-                            setColor(Color.parseColor("#9E9E9E"))
+                        val isEarlyLeaveCheckout = snap.child("earlyLeaveCheckout").value as? Boolean ?: false
+                        if (isEarlyLeaveCheckout) {
+                            // Allow re-check-in
+                            isCheckedIn = false
+                            isCheckedOut = false
+                            earlyLeaveApproved = false
+                            earlyLeaveRequestKey = ""
+                            btnAction.text = "Mark Check-In"
+                            btnAction.background = GradientDrawable().apply {
+                                shape = GradientDrawable.RECTANGLE
+                                cornerRadius = 12f * resources.displayMetrics.density
+                                setColor(Color.parseColor("#2E7D32"))
+                            }
+                            btnAction.isEnabled = true
+                            tvInstruction.text = "Welcome back! Tap to re-check-in"
+                            btnEarlyLeave.visibility = android.view.View.GONE
+                        } else {
+                            btnAction.text = "Attendance Complete"
+                            // ── COMPLETE COLOR: Change "#9E9E9E" to any color ──
+                            btnAction.background = GradientDrawable().apply {
+                                shape = GradientDrawable.RECTANGLE
+                                cornerRadius = 12f * resources.displayMetrics.density
+                                setColor(Color.parseColor("#9E9E9E"))
+                            }
+                            btnAction.isEnabled = false
+                            tvInstruction.text = "Today attendance recorded successfully"
+                            btnEarlyLeave.visibility = android.view.View.GONE
                         }
-                        btnAction.isEnabled = false
-                        tvInstruction.text = "Today attendance recorded successfully"
-                        btnEarlyLeave.visibility = View.GONE
                     }
                 }
             }
