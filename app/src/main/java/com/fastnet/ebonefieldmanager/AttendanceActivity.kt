@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -25,13 +24,30 @@ class AttendanceActivity : AppCompatActivity() {
     private var employeeName = ""
     private var deviceId = ""
     private var todayKey = ""
+    private var complaintAddress = ""
+    private var preShiftMinutes = 60
+    private var complaintRadiusMeters = 500.0
 
-    private var officeStartHour = 10
-    private var officeStartMinute = 0
-    private var officeEndHour = 22
-    private var officeEndMinute = 0
+    private var officeStartHour = 10; private var officeStartMinute = 0
+    private var officeEndHour = 22; private var officeEndMinute = 0
     private var gracePeriodMinutes = 15
+    private var postShiftMinutes = 60
 
+    // Sessions
+    private val sessions = mutableListOf<MutableMap<String, Any>>()
+    private var currentSessionIndex = -1
+    private var isCurrentlyCheckedIn = false
+
+    // Early leave
+    private var earlyLeaveRequestKey = ""
+    private var earlyLeaveApproved = false
+    private var earlyLeaveListener: ValueEventListener? = null
+
+    // Listener
+    private var attendanceListener: ValueEventListener? = null
+    private var officeSettingsListener: ValueEventListener? = null
+
+    // UI
     private lateinit var tvCheckInTime: TextView
     private lateinit var tvCheckOutTime: TextView
     private lateinit var tvStatusBadge: TextView
@@ -43,40 +59,28 @@ class AttendanceActivity : AppCompatActivity() {
     private lateinit var tvAbsentVal: TextView
     private lateinit var tvLateVal: TextView
     private lateinit var tvScoreVal: TextView
-
-    private var isCheckedIn = false
-    private var isCheckedOut = false
-    private var earlyLeaveRequestKey = ""
-    private var earlyLeaveApproved = false
-    private var earlyLeaveListener: com.google.firebase.database.ValueEventListener? = null
-    private var complaintAddress = ""
-    private var complaintUser = ""
-    private var preShiftMinutes = 60
-    private var complaintRadiusMeters = 500.0
+    private lateinit var sessionsContainer: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
-        employeeName = EmployeeSession.getEmployeeName()
-        // Also try loading from Firebase if name is empty
-        if (employeeName.isEmpty()) {
-            com.google.firebase.database.FirebaseDatabase.getInstance()
-                .getReference("employees").child(deviceId).child("employeeName")
-                .get().addOnSuccessListener { snap ->
-                    val fbName = snap.value?.toString() ?: ""
-                    if (fbName.isNotEmpty()) employeeName = fbName
-                }
-        }
+        employeeName = getSharedPreferences("employee_session", Context.MODE_PRIVATE).getString("employee_name", "") ?: ""
         complaintAddress = intent.getStringExtra("complaintAddress") ?: ""
-        complaintUser = intent.getStringExtra("complaintUser") ?: ""
         todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+
+        if (employeeName.isEmpty()) {
+            db.getReference("employees").child(deviceId).child("employeeName").get()
+                .addOnSuccessListener { snap -> snap.value?.toString()?.let { if (it.isNotEmpty()) employeeName = it } }
+        }
+
         setContentView(buildLayout())
         loadOfficeSettings()
-        loadTodayAttendance()
+        attachAttendanceListener() // ONE TIME listener
+        checkApprovedLeave()
         loadMonthlyStats()
     }
 
-    // ───────────────── LAYOUT ─────────────────
+    // ─────── LAYOUT ───────
 
     private fun buildLayout(): View {
         val dp = resources.displayMetrics.density
@@ -88,689 +92,474 @@ class AttendanceActivity : AppCompatActivity() {
 
         // Header
         val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Color.parseColor("#0D2E5C"))
-            setPadding(px(16, dp), px(48, dp), px(16, dp), px(16, dp))
+            setPadding(px(16,dp), px(48,dp), px(16,dp), px(16,dp))
         }
-        val backBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_revert)
-            background = null
+        ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_revert); background = null
             setColorFilter(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(px(28, dp), px(28, dp))
+            layoutParams = LinearLayout.LayoutParams(px(28,dp), px(28,dp))
             setOnClickListener { finish() }
-        }
+        }.also { header.addView(it) }
+
         val titleBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.marginStart = px(12, dp) }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.marginStart = px(12,dp) }
         }
-        val dateStr = SimpleDateFormat("EEE, dd MMM yyyy", Locale.getDefault()).format(Date())
         titleBlock.addView(tv("Attendance", 17f, Color.WHITE, bold = true))
-        titleBlock.addView(tv(dateStr, 13f, Color.parseColor("#B8C6DE")))
-        tvStatusBadge = tv("Not Marked", 12f, Color.parseColor("#9E9E9E"), bold = true).also {
-            it.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 20f * dp
-                setColor(Color.parseColor("#F5F5F5"))
-            }
-            it.setPadding(px(12, dp), px(4, dp), px(12, dp), px(4, dp))
-        }
-        header.addView(backBtn)
+        titleBlock.addView(tv(SimpleDateFormat("EEE, dd MMM yyyy", Locale.getDefault()).format(Date()), 13f, Color.parseColor("#B8C6DE")))
         header.addView(titleBlock)
+
+        // Time Log button (top right)
+        tvStatusBadge = tv("Time Log", 11f, Color.parseColor("#111111"), bold = true).also {
+            it.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 16f*dp; setColor(Color.parseColor("#F5F5F5")) }
+            it.setPadding(px(12,dp), px(3,dp), px(12,dp), px(3,dp))
+            it.isClickable = true; it.isFocusable = true
+            it.setOnClickListener { showEmployeeTimeLog() }
+        }
         header.addView(tvStatusBadge)
         root.addView(header)
 
-        val scroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(px(12, dp), px(12, dp), px(12, dp), px(12, dp))
-        }
+        val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT) }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(px(12,dp), px(12,dp), px(12,dp), px(12,dp)) }
         scroll.addView(content)
 
-        // Times
+        // Check-In / Check-Out Times
         val timesRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10, dp) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10,dp) }
         }
-        val checkInCard = timeCard("Check-In", Color.parseColor("#E8F5E9"), Color.parseColor("#1B5E20"), dp)
-        val checkOutCard = timeCard("Check-Out", Color.parseColor("#F4F6FA"), Color.parseColor("#9E9E9E"), dp)
-        tvCheckInTime = checkInCard.findViewWithTag("time")
-        tvCheckOutTime = checkOutCard.findViewWithTag("time")
-        timesRow.addView(checkInCard.apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.marginEnd = px(6, dp) } })
-        timesRow.addView(checkOutCard.apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+        val inCard = timeCard("Check-In", Color.parseColor("#E8F5E9"), Color.parseColor("#1B5E20"), dp)
+        val outCard = timeCard("Check-Out", Color.parseColor("#F4F6FA"), Color.parseColor("#9E9E9E"), dp)
+        tvCheckInTime = inCard.findViewWithTag("time")
+        tvCheckOutTime = outCard.findViewWithTag("time")
+        timesRow.addView(inCard.apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.marginEnd = px(6,dp) } })
+        timesRow.addView(outCard.apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
         content.addView(timesRow)
 
-        // Biometric card
-        val biometricCard = LinearLayout(this).apply {
+        // Sessions History Card
+        val sessCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundRect(Color.WHITE, 12f, dp)
-            setPadding(px(16, dp), px(20, dp), px(16, dp), px(16, dp))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10, dp) }
+            background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 10f*dp; setColor(Color.WHITE) }
+            setPadding(px(14,dp), px(10,dp), px(14,dp), px(10,dp))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10,dp) }
         }
-
-        // Fingerprint rings + icon
-        val frame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(px(120, dp), px(120, dp)).also { it.gravity = Gravity.CENTER; it.bottomMargin = px(14, dp) }
-        }
-        frame.addView(ring(px(120, dp), Color.parseColor("#BBDEFB"), 1f, dp))
-        frame.addView(ring(px(106, dp), Color.parseColor("#90CAF9"), 1.5f, dp))
-        val circle = LinearLayout(this).apply {
-            val s = px(88, dp)
-            layoutParams = FrameLayout.LayoutParams(s, s).also { it.gravity = Gravity.CENTER }
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#E3F2FD"))
-                setStroke(px(2, dp), Color.parseColor("#1565C0"))
-            }
-        }
-        circle.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_fingerprint)
-            layoutParams = LinearLayout.LayoutParams(px(46, dp), px(46, dp))
-            scaleType = ImageView.ScaleType.FIT_CENTER
+        sessCard.addView(tv("Today's Sessions", 13f, Color.parseColor("#555555"), bold = true).also {
+            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(6,dp) }
         })
+        sessionsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sessCard.addView(sessionsContainer)
+        content.addView(sessCard)
+
+        // Biometric Card
+        val bioCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.WHITE) }
+            setPadding(px(16,dp), px(20,dp), px(16,dp), px(16,dp))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10,dp) }
+        }
+
+        // Fingerprint Icon
+        val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(px(120,dp), px(120,dp)).also { it.gravity = Gravity.CENTER; it.bottomMargin = px(14,dp) } }
+        frame.addView(ring(px(120,dp), Color.parseColor("#BBDEFB"), 1f, dp))
+        frame.addView(ring(px(106,dp), Color.parseColor("#90CAF9"), 1.5f, dp))
+        val circle = LinearLayout(this).apply {
+            val s = px(88,dp)
+            layoutParams = FrameLayout.LayoutParams(s, s).also { it.gravity = Gravity.CENTER }; gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#E3F2FD")); setStroke(px(2,dp), Color.parseColor("#1565C0")) }
+        }
+        circle.addView(ImageView(this).apply { setImageResource(R.drawable.ic_fingerprint); layoutParams = LinearLayout.LayoutParams(px(46,dp), px(46,dp)); scaleType = ImageView.ScaleType.FIT_CENTER })
         frame.addView(circle)
+        bioCard.addView(LinearLayout(this).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(14,dp) }; addView(frame) })
 
-        val iconRow = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(14, dp) }
-        }
-        iconRow.addView(frame)
-        biometricCard.addView(iconRow)
-
-        tvInstruction = tv("Tap to mark your Check-In\nFingerprint or Face ID required", 13f, Color.parseColor("#757575")).also {
+        tvInstruction = tv("Tap to mark Check-In\nFingerprint or Face ID required", 13f, Color.parseColor("#757575")).also {
             it.gravity = Gravity.CENTER
-            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(16, dp) }
+            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(16,dp) }
         }
-        biometricCard.addView(tvInstruction)
+        bioCard.addView(tvInstruction)
 
         btnAction = Button(this).apply {
-            text = "Mark Check-In"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            // ── BUTTON COLOR: Change "#2E7D32" to any color you want ──
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 12f * dp
-                setColor(Color.parseColor("#2E7D32"))
-            }
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(8, dp) }
+            text = "Check-In"; textSize = 15f; setTextColor(Color.WHITE)
+            background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#2E7D32")) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(8,dp) }
             setOnClickListener { handleAttendanceClick() }
         }
-        biometricCard.addView(btnAction)
+        bioCard.addView(btnAction)
 
         btnEarlyLeave = Button(this).apply {
-            text = "Request Early Leave"
-            textSize = 13f
+            text = "Request Early Leave"; textSize = 13f
             setTextColor(Color.parseColor("#E65100"))
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 8f * dp
-                setColor(Color.WHITE)
-                setStroke(px(1, dp), Color.parseColor("#E65100"))
-            }
+            background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.WHITE); setStroke(px(1,dp), Color.parseColor("#E65100")) }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             visibility = View.GONE
             setOnClickListener { showEarlyLeaveDialog() }
         }
-        biometricCard.addView(btnEarlyLeave)
-        content.addView(biometricCard)
+        bioCard.addView(btnEarlyLeave)
+        content.addView(bioCard)
 
-        // Monthly stats
+        // Monthly Stats
         content.addView(tv("THIS MONTH", 13f, Color.parseColor("#9E9E9E"), bold = true).also {
-            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(6, dp) }
+            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(6,dp) }
         })
-
         val statsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10, dp) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(10,dp) }
         }
         tvPresentVal = tv("—", 23f, Color.parseColor("#1B5E20"), bold = true).also { it.gravity = Gravity.CENTER }
         tvAbsentVal = tv("—", 23f, Color.parseColor("#B71C1C"), bold = true).also { it.gravity = Gravity.CENTER }
         tvLateVal = tv("—", 23f, Color.parseColor("#BF360C"), bold = true).also { it.gravity = Gravity.CENTER }
         tvScoreVal = tv("—", 23f, Color.parseColor("#0D47A1"), bold = true).also { it.gravity = Gravity.CENTER }
-
-        statsRow.addView(statBox(tvPresentVal, "Present", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4, dp) } })
-        statsRow.addView(statBox(tvAbsentVal, "Absent", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4, dp) } })
-        statsRow.addView(statBox(tvLateVal, "Late", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4, dp) } })
+        statsRow.addView(statBox(tvPresentVal, "Present", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4,dp) } })
+        statsRow.addView(statBox(tvAbsentVal, "Absent", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4,dp) } })
+        statsRow.addView(statBox(tvLateVal, "Late", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { m -> m.marginEnd = px(4,dp) } })
         statsRow.addView(statBox(tvScoreVal, "Score", dp).also { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
         content.addView(statsRow)
 
         // Office hours footer
-        val footer = LinearLayout(this).apply {
-            gravity = Gravity.CENTER
-            background = roundRect(Color.WHITE, 8f, dp)
-            setPadding(px(12, dp), px(10, dp), px(12, dp), px(10, dp))
-        }
         tvOfficeHours = tv("Office Hours: Loading...", 13f, Color.parseColor("#444444")).also { it.gravity = Gravity.CENTER }
-        footer.addView(tvOfficeHours)
-        content.addView(footer)
+        content.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.WHITE) }
+            setPadding(px(12,dp), px(10,dp), px(12,dp), px(10,dp))
+            addView(tvOfficeHours)
+        })
 
         root.addView(scroll)
         return root
     }
 
-    // ───────────────── HELPERS ─────────────────
+    // ─────── REAL-TIME LISTENER ───────
 
-    private fun px(v: Int, dp: Float) = (v * dp).toInt()
+    private fun attachAttendanceListener() {
+        val ref = db.getReference("attendance").child(deviceId).child(todayKey)
+        // Remove previous
+        attendanceListener?.let { ref.removeEventListener(it) }
 
-    private fun tv(text: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
-        this.text = text
-        textSize = size
-        setTextColor(color)
-        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
-    }
-
-    private fun roundRect(color: Int, radius: Float, dp: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = radius * dp
-        setColor(color)
-    }
-
-    private fun timeCard(label: String, bg: Int, textColor: Int, dp: Float) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(px(14, dp), px(12, dp), px(14, dp), px(12, dp))
-        background = roundRect(bg, 10f, dp)
-        addView(tv(label, 13f, Color.parseColor("#333333")))
-        addView(tv("— —", 18f, textColor, bold = true).also {
-            it.tag = "time"
-            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.topMargin = px(4, dp) }
-        })
-    }
-
-    private fun ring(size: Int, color: Int, stroke: Float, dp: Float) = View(this).apply {
-        layoutParams = FrameLayout.LayoutParams(size, size).also { it.gravity = Gravity.CENTER }
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.TRANSPARENT)
-            setStroke((stroke * dp).toInt(), color)
-            alpha = 150
+        attendanceListener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                runOnUiThread { processAttendanceSnapshot(snap) }
+            }
+            override fun onCancelled(e: DatabaseError) {}
         }
+        ref.addValueEventListener(attendanceListener!!)
     }
 
-    private fun statBox(valView: TextView, label: String, dp: Float) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        setPadding(px(8, dp), px(14, dp), px(8, dp), px(14, dp))
-        background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.WHITE); setStroke(px(1,dp), Color.parseColor("#DDDDDD")) }
-        isClickable = true
-        isFocusable = true
-        setOnClickListener { showStatDetail(label) }
-        addView(valView)
-        addView(tv(label, 12f, Color.parseColor("#333333")).also {
-            it.gravity = Gravity.CENTER
-            it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.topMargin = px(2, dp) }
-        })
-    }
+    private fun processAttendanceSnapshot(snap: DataSnapshot) {
+        sessions.clear()
+        currentSessionIndex = -1
+        isCurrentlyCheckedIn = false
 
-    private fun showStatDetail(type: String) {
-        val monthKey = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
-        db.getReference("attendance").child(deviceId)
-            .orderByKey()
-            .startAt("${monthKey}-01")
-            .endAt("${monthKey}-31")
-            .get()
-            .addOnSuccessListener { snap ->
-                val dp = resources.displayMetrics.density
-                val scroll = android.widget.ScrollView(this)
-                val container = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(px(16, dp), px(8, dp), px(16, dp), px(8, dp))
+        val sessSnap = snap.child("sessions")
+
+        if (sessSnap.exists()) {
+            // New sessions structure
+            for (s in sessSnap.children) {
+                val m = mutableMapOf<String, Any>()
+                s.children.forEach { child -> child.key?.let { k -> child.value?.let { v -> m[k] = v } } }
+                sessions.add(m)
+            }
+            // Find active session
+            for (i in sessions.indices.reversed()) {
+                val co = sessions[i]["checkOutTime"]?.toString() ?: ""
+                if (co.isEmpty()) {
+                    isCurrentlyCheckedIn = true
+                    currentSessionIndex = i
+                    break
                 }
-                scroll.addView(container)
+            }
+        } else {
+            // Legacy structure (old single session)
+            val ci = snap.child("checkInTime").value?.toString() ?: ""
+            val co = snap.child("checkOutTime").value?.toString() ?: ""
+            val st = snap.child("status").value?.toString() ?: ""
+            if (ci.isNotEmpty()) {
+                val m = mutableMapOf<String, Any>("checkInTime" to ci, "checkOutTime" to co, "status" to st)
+                if (co.isNotEmpty()) m["checkOutTime"] = co
+                sessions.add(m)
+                if (co.isEmpty()) { isCurrentlyCheckedIn = true; currentSessionIndex = 0 }
+            }
+        }
 
-                var count = 0
-                val presentDates = snap.children.associate { it.key to it }
-                val cal2 = Calendar.getInstance()
-                val todayDay2 = cal2.get(Calendar.DAY_OF_MONTH)
-                val monthKey2 = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
+        // Update UI (Firebase callbacks run on main thread already)
+        updateUI()
+        renderSessions()
+        checkApprovedLeave()
+        loadMonthlyStats()
+    }
 
-                // For Absent: generate missing days list
-                val iterList: List<String> = if (type == "Absent") {
-                    (1 until todayDay2).map { d ->
-                        "${monthKey2}-${String.format(Locale.getDefault(), "%02d", d)}"
-                    }.filter { it !in presentDates }
+    private fun renderSessions() {
+        val dp = resources.displayMetrics.density
+        sessionsContainer.removeAllViews()
+
+        if (sessions.isEmpty()) {
+            sessionsContainer.addView(tv("No sessions today", 12f, Color.parseColor("#9E9E9E")).also {
+                it.gravity = Gravity.CENTER; it.setPadding(0, px(4,dp), 0, px(4,dp))
+            })
+            tvCheckInTime.text = "— —"
+            tvCheckOutTime.text = "— —"
+            return
+        }
+
+        sessions.forEachIndexed { i, sess ->
+            val ci = sess["checkInTime"]?.toString() ?: ""
+            val co = sess["checkOutTime"]?.toString() ?: ""
+            val st = sess["status"]?.toString() ?: ""
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, px(6,dp), 0, px(6,dp))
+                setBackgroundColor(if (i % 2 == 0) Color.WHITE else Color.parseColor("#FAFAFA"))
+            }
+
+            val sessionLabel = tv("Session ${i+1}", 11f, Color.parseColor("#777777"), bold = true).also {
+                it.layoutParams = LinearLayout.LayoutParams(px(70,dp), ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+            val timeText = when {
+                ci.isNotEmpty() && co.isNotEmpty() -> "$ci → $co"
+                ci.isNotEmpty() -> "$ci → active"
+                else -> "—"
+            }
+            val timeTv = tv(timeText, 12f, if (co.isEmpty() && ci.isNotEmpty()) Color.parseColor("#2E7D32") else Color.parseColor("#333333")).also {
+                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            val badgeText = when {
+                co.isEmpty() && ci.isNotEmpty() -> "Active"
+                st == "LATE" -> "Late"
+                st == "OVERTIME" -> "OT"
+                ci.isNotEmpty() -> "Done"
+                else -> "—"
+            }
+            val badgeColor = when(badgeText) { "Active" -> "#2E7D32"; "Late" -> "#C62828"; "OT" -> "#1565C0"; else -> "#9E9E9E" }
+            val badge = tv(badgeText, 10f, Color.parseColor(badgeColor), bold = true).also {
+                it.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.parseColor(badgeColor + "22")) }
+                it.setPadding(px(6,dp), px(2,dp), px(6,dp), px(2,dp))
+            }
+
+            row.addView(sessionLabel); row.addView(timeTv); row.addView(badge)
+            sessionsContainer.addView(row)
+        }
+
+        // Update time cards with latest session
+        val lastSess = sessions.last()
+        val activeSess = sessions.lastOrNull { (it["checkOutTime"]?.toString() ?: "").isEmpty() && (it["checkInTime"]?.toString() ?: "").isNotEmpty() }
+        tvCheckInTime.text = (activeSess ?: lastSess)["checkInTime"]?.toString() ?: "— —"
+        tvCheckOutTime.text = (activeSess ?: lastSess)["checkOutTime"]?.toString().let { if (it.isNullOrEmpty()) "— —" else it }
+    }
+
+    private fun updateUI() {
+        val dp = resources.displayMetrics.density
+
+        // Check early leave approved from SharedPrefs
+        val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
+        val isApprovedToday = prefs.getString("approvedLeaveDate", "") == todayKey
+
+        when {
+            !isCurrentlyCheckedIn && sessions.isEmpty() -> {
+                // No sessions yet
+                btnAction.text = "Check-In"
+                setGreenBtn()
+                tvInstruction.text = "Tap to mark Check-In\nFingerprint or Face ID required"
+                btnEarlyLeave.visibility = View.GONE
+            }
+            !isCurrentlyCheckedIn && sessions.isNotEmpty() -> {
+                // Has sessions but all completed
+                val lastCo = sessions.last()["checkOutTime"]?.toString() ?: ""
+                val nowTotal = Calendar.getInstance().let { it.get(Calendar.HOUR_OF_DAY)*60 + it.get(Calendar.MINUTE) }
+                val endTotal = officeEndHour*60 + officeEndMinute
+
+                if (lastCo.isNotEmpty() && nowTotal < endTotal) {
+                    // Can re-check-in (within office hours)
+                    btnAction.text = "Check-In"
+                    setGreenBtn()
+                    tvInstruction.text = "Welcome back! Tap to re-check-in"
+                    btnEarlyLeave.visibility = View.GONE
                 } else {
-                    snap.children.map { it.key ?: "" }.filter { it.isNotEmpty() }.sorted()
-                }
-
-                iterList.forEach { date ->
-                    val day = presentDates[date]
-                    val checkIn = day?.child("checkInTime")?.value?.toString() ?: ""
-                    val checkOut = day?.child("checkOutTime")?.value?.toString() ?: ""
-                    val status = day?.child("status")?.value?.toString() ?: ""
-
-                    val show = when (type) {
-                        "Present" -> checkIn.isNotEmpty()
-                        "Late" -> status == "LATE"
-                        "Score" -> true
-                        else -> false // Absent handled separately below
-                    }
-                    if (type != "Absent" && !show) return@forEach
-                    if (type == "Absent" && checkIn.isNotEmpty()) return@forEach
-                    count++
-
-                    val row = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(0, px(10, dp), 0, px(10, dp))
-                        background = if (count % 2 == 0)
-                            android.graphics.drawable.ColorDrawable(Color.parseColor("#F8F8F8"))
-                        else
-                            android.graphics.drawable.ColorDrawable(Color.WHITE)
-                    }
-
-                    // Format date nicely
-                    val dateFmt = try {
-                        val d = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(date)
-                        SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(d!!)
-                    } catch (e: Exception) { date }
-
-                    val dateView = tv(dateFmt, 13f, Color.parseColor("#333333"), bold = true).also {
-                        it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    }
-
-                    val detail = when (type) {
-                        "Present" -> if (checkOut.isNotEmpty()) "$checkIn → $checkOut" else "$checkIn → —"
-                        "Absent" -> "Absent"
-                        "Late" -> "In: $checkIn"
-                        "Score" -> {
-                            val badge = when (status) {
-                                "ON_TIME" -> "On Time"
-                                "LATE" -> "Late"
-                                "OVERTIME" -> "Overtime"
-                                else -> if (checkIn.isEmpty()) "Absent" else "Present"
-                            }
-                            badge
-                        }
-                        else -> ""
-                    }
-
-                    val statusColor = when {
-                        type == "Absent" -> Color.parseColor("#C62828")
-                        status == "LATE" -> Color.parseColor("#E65100")
-                        status == "OVERTIME" -> Color.parseColor("#1565C0")
-                        else -> Color.parseColor("#2E7D32")
-                    }
-                    val detailView = tv(detail, 12f, statusColor)
-
-                    row.addView(dateView)
-                    row.addView(detailView)
-                    container.addView(row)
-
-                    // Divider
-                    container.addView(View(this).apply {
-                        setBackgroundColor(Color.parseColor("#EEEEEE"))
-                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
-                    })
-                }
-
-                if (count == 0) {
-                    container.addView(tv("No records found for this month.", 13f, Color.parseColor("#9E9E9E")).also {
-                        it.gravity = Gravity.CENTER
-                        it.setPadding(0, px(20, dp), 0, px(20, dp))
-                    })
-                }
-
-                val title = when (type) {
-                    "Present" -> "Present Days — $count"
-                    "Absent" -> "Absent Days — $count"
-                    "Late" -> "Late Arrivals — $count"
-                    "Score" -> "Monthly Attendance Log"
-                    else -> type
-                }
-
-                AlertDialog.Builder(this)
-                    .setTitle(title)
-                    .setView(scroll)
-                    .setPositiveButton("Close", null)
-                    .show()
-            }
-            .addOnFailureListener { showInfo("Failed to load data.") }
-    }
-
-    private fun listenForLeaveApproval(requestKey: String) {
-        if (requestKey.isEmpty()) return
-        val ref = com.google.firebase.database.FirebaseDatabase.getInstance()
-            .getReference("earlyLeaveRequests")
-            .child(requestKey)
-        earlyLeaveListener = object : com.google.firebase.database.ValueEventListener {
-            override fun onDataChange(snap: com.google.firebase.database.DataSnapshot) {
-                val status = snap.child("status").value?.toString() ?: return
-                when (status) {
-                    "APPROVED" -> {
-                        earlyLeaveApproved = true
-                        runOnUiThread {
-                            androidx.appcompat.app.AlertDialog.Builder(this@AttendanceActivity)
-                                .setTitle("Request Approved")
-                                .setMessage("Your early leave request has been approved. You can now check out.")
-                                .setPositiveButton("OK") { _, _ ->
-                                    loadTodayAttendance()
-                                }
-                                .setCancelable(false)
-                                .show()
-                        }
-                    }
-                    "REJECTED" -> {
-                        earlyLeaveApproved = false
-                        earlyLeaveRequestKey = ""
-                        runOnUiThread {
-                            androidx.appcompat.app.AlertDialog.Builder(this@AttendanceActivity)
-                                .setTitle("Request Rejected")
-                                .setMessage("Your early leave request was rejected. Please contact your admin.")
-                                .setPositiveButton("OK", null)
-                                .setCancelable(false)
-                                .show()
-                        }
-                    }
+                    btnAction.text = "Attendance Complete"
+                    btnAction.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#9E9E9E")) }
+                    btnAction.isEnabled = false
+                    tvInstruction.text = "Today attendance recorded successfully"
+                    btnEarlyLeave.visibility = View.GONE
                 }
             }
-            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
-        }
-        ref.addValueEventListener(earlyLeaveListener!!)
-    }
+            isCurrentlyCheckedIn -> {
+                // Currently checked in
+                btnAction.text = "Check-Out"
+                btnAction.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#C62828")) }
+                btnAction.isEnabled = true
+                tvInstruction.text = "Checked in! Tap to mark Check-Out"
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (earlyLeaveRequestKey.isNotEmpty() && earlyLeaveListener != null) {
-            com.google.firebase.database.FirebaseDatabase.getInstance()
-                .getReference("earlyLeaveRequests")
-                .child(deviceId)
-                .child(earlyLeaveRequestKey)
-                .removeEventListener(earlyLeaveListener!!)
+                if (isApprovedToday) {
+                    earlyLeaveApproved = true
+                    btnEarlyLeave.visibility = View.VISIBLE
+                    btnEarlyLeave.text = "Leave Approved  Check Out Now"
+                    btnEarlyLeave.isEnabled = false
+                    btnEarlyLeave.setTextColor(Color.parseColor("#2E7D32"))
+                } else {
+                    val nowTotal = Calendar.getInstance().let { it.get(Calendar.HOUR_OF_DAY)*60 + it.get(Calendar.MINUTE) }
+                    val endTotal = officeEndHour*60 + officeEndMinute
+                    val startTotal = officeStartHour*60 + officeStartMinute
+                    btnEarlyLeave.visibility = if (nowTotal in startTotal..endTotal) View.VISIBLE else View.GONE
+                    btnEarlyLeave.text = "Request Early Leave"
+                    btnEarlyLeave.isEnabled = true
+                    btnEarlyLeave.setTextColor(Color.parseColor("#E65100"))
+                }
+            }
         }
     }
 
-    private fun showInfo(msg: String) {
-        AlertDialog.Builder(this)
-            .setMessage(msg)
-            .setPositiveButton("OK", null)
-            .show()
+    private fun setGreenBtn() {
+        val dp = resources.displayMetrics.density
+        btnAction.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#2E7D32")) }
+        btnAction.isEnabled = true
     }
 
-    // ───────────────── ATTENDANCE LOGIC ─────────────────
+    // ─────── ATTENDANCE LOGIC ───────
 
     private fun handleAttendanceClick() {
-        // Step 1: GPS must be ON
-        val locationManager = getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
-        val isGpsOn = locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
-                locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
-
-        if (!isGpsOn) {
-            AlertDialog.Builder(this)
-                .setTitle("GPS Required")
-                .setMessage("GPS must be ON to mark attendance. Please enable location and try again.")
-                .setPositiveButton("Open Settings") { _, _ ->
-                    startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
+        val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        if (!lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) && !lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
+            AlertDialog.Builder(this).setTitle("GPS Required").setMessage("Enable GPS to mark attendance.")
+                .setPositiveButton("Settings") { _, _ -> startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                .setNegativeButton("Cancel", null).show(); return
         }
-
-        // Step 2: Time window check
         val now = Calendar.getInstance()
-        when {
-            !isCheckedIn -> {
-                val windowOpen = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, officeStartHour)
-                    set(Calendar.MINUTE, (officeStartMinute - preShiftMinutes).coerceAtLeast(0))
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                if (now.before(windowOpen)) {
-                    val h = if (officeStartHour > 12) officeStartHour - 12 else officeStartHour
-                    val m = (officeStartMinute - preShiftMinutes).coerceAtLeast(0)
-                    val startAmPm = if (officeStartHour >= 12) "PM" else "AM"
-                    showInfo("Check-in opens at $h:${String.format(Locale.getDefault(), "%02d", m)} $startAmPm")
-                    return
-                }
-                // Step 3: Verify location
-                verifyLocationThenBiometric(isCheckIn = true)
+        if (!isCurrentlyCheckedIn) {
+            // officeStartHour/Minute/preShiftMinutes kept up-to-date by officeSettingsListener
+            val totalMins = officeStartHour * 60 + officeStartMinute - preShiftMinutes
+            val wHour = (totalMins / 60).coerceAtLeast(0)
+            val wMin = (totalMins % 60).coerceAtLeast(0)
+            val wOpen = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, wHour); set(Calendar.MINUTE, wMin); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+            if (now.before(wOpen)) {
+                val dH = if (wHour > 12) wHour - 12 else if (wHour == 0) 12 else wHour
+                val ap = if (wHour >= 12) "PM" else "AM"
+                showInfo("Check-in opens at $dH:${String.format(Locale.getDefault(), "%02d", wMin)} $ap")
+                return
             }
-            !isCheckedOut -> {
-                val windowOpen = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, officeEndHour)
-                    set(Calendar.MINUTE, (officeEndMinute - 30).coerceAtLeast(0))
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                if (now.before(windowOpen)) {
-                    val h = if (officeEndHour > 12) officeEndHour - 12 else officeEndHour
-                    val endAmPm = if (officeEndHour >= 12) "PM" else "AM"
-                    showInfo("Check-out opens at $h:30 $endAmPm. For early departure use Request Early Leave button.")
-                    return
-                }
-                verifyLocationThenBiometric(isCheckIn = false)
+            verifyLocationThenBiometric(isCheckIn = true)
+        } else {
+            if (earlyLeaveApproved) { verifyLocationThenBiometric(isCheckIn = false); return }
+            val checkoutWindow = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, officeEndHour)
+                set(Calendar.MINUTE, officeEndMinute)
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
             }
-            else -> showInfo("Today attendance is already complete!")
+            if (now.before(checkoutWindow)) {
+                val dispH = if (officeEndHour > 12) officeEndHour - 12 else if (officeEndHour == 0) 12 else officeEndHour
+                val ampm = if (officeEndHour >= 12) "PM" else "AM"
+                val dispM = String.format(Locale.getDefault(), "%02d", officeEndMinute)
+                showInfo("Check-out opens at $dispH:$dispM $ampm. Use Request Early Leave for early departure.")
+                return
+            }
+            verifyLocationThenBiometric(isCheckIn = false)
         }
     }
 
+
     private fun verifyLocationThenBiometric(isCheckIn: Boolean) {
-        tvInstruction.text = "Verifying your location..."
-
-        // Check location permission
-        val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-        if (!hasFine && !hasCoarse) {
-            showInfo("Location permission is required. Please grant it in app settings.")
-            tvInstruction.text = "Tap to mark your attendance"
-            return
-        }
-
-        // Get current location
-        val locationManager = getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
-        var currentLoc: android.location.Location? = null
-
-        try {
-            currentLoc = locationManager.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
-        } catch (ex: SecurityException) {
-            showInfo("Location permission denied.")
-            return
-        }
-
-        if (currentLoc == null) {
-            // No location yet — allow anyway if complaint exists, or wait
-            checkComplaintThenProceed(isCheckIn, null)
-            return
-        }
-
-        // Check against office geofence
+        tvInstruction.text = "Verifying location..."
+        val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) { showInfo("Location permission required."); tvInstruction.text = "Tap to mark attendance"; return }
+        val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        var loc: android.location.Location? = null
+        try { loc = lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER) } catch (e: SecurityException) {}
+        if (loc == null) { checkComplaintThenProceed(isCheckIn, null); return }
         db.getReference("attendanceGeofence").get().addOnSuccessListener { snap ->
-            val officeLat = (snap.child("lat").value as? Number)?.toDouble()
-            val officeLng = (snap.child("lng").value as? Number)?.toDouble()
+            val oLat = (snap.child("lat").value as? Number)?.toDouble()
+            val oLng = (snap.child("lng").value as? Number)?.toDouble()
             val radius = (snap.child("radius").value as? Number)?.toDouble() ?: 200.0
-
-            if (officeLat != null && officeLng != null) {
-                val results = FloatArray(1)
-                android.location.Location.distanceBetween(
-                    currentLoc.latitude, currentLoc.longitude,
-                    officeLat, officeLng,
-                    results
-                )
-                val distanceMeters = results[0]
-
-                if (distanceMeters <= radius) {
-                    // Within office geofence
-                    tvInstruction.text = "Office location verified. Place your finger."
-                    launchBiometric(isCheckIn)
-                    return@addOnSuccessListener
-                }
+            if (oLat != null && oLng != null) {
+                val r = FloatArray(1); android.location.Location.distanceBetween(loc.latitude, loc.longitude, oLat, oLng, r)
+                if (r[0] <= radius) { tvInstruction.text = "Office verified. Place your finger."; launchBiometric(isCheckIn); return@addOnSuccessListener }
             }
-
-            // Not in office — check if complaint assigned
-            checkComplaintThenProceed(isCheckIn, currentLoc)
+            checkComplaintThenProceed(isCheckIn, loc)
         }
     }
 
     private fun checkComplaintThenProceed(isCheckIn: Boolean, location: android.location.Location?) {
-        if (complaintAddress.isEmpty()) {
-            tvInstruction.text = "Tap to mark your attendance"
-            showInfo("Location not verified. You must be at office or have an active complaint to mark attendance.")
-            return
-        }
-
+        if (complaintAddress.isEmpty()) { showInfo("Not at office or complaint location."); tvInstruction.text = "Tap to mark attendance"; return }
         tvInstruction.text = "Verifying complaint location..."
-
         Thread {
             try {
-                val geocoder = android.location.Geocoder(this, java.util.Locale.getDefault())
-                val query = "$complaintAddress, Okara"
+                val geocoder = android.location.Geocoder(this, Locale.getDefault())
                 var lat = 0.0; var lng = 0.0; var found = false
-
                 if (android.os.Build.VERSION.SDK_INT >= 33) {
                     val latch = java.util.concurrent.CountDownLatch(1)
-                    geocoder.getFromLocationName(query, 1) { results ->
-                        if (results.isNotEmpty()) {
-                            lat = results[0].latitude; lng = results[0].longitude; found = true
-                        }
-                        latch.countDown()
-                    }
+                    geocoder.getFromLocationName("$complaintAddress, Okara", 1) { r -> if (r.isNotEmpty()) { lat = r[0].latitude; lng = r[0].longitude; found = true }; latch.countDown() }
                     latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
-                } else {
-                    @Suppress("DEPRECATION")
-                    val results = geocoder.getFromLocationName(query, 1)
-                    if (!results.isNullOrEmpty()) {
-                        lat = results[0].latitude; lng = results[0].longitude; found = true
-                    }
-                }
-
-                val smartRadius = when {
-                    complaintAddress.contains("colony", ignoreCase = true) ||
-                            complaintAddress.contains("block", ignoreCase = true) -> 600.0
-                    complaintAddress.contains("road", ignoreCase = true) ||
-                            complaintAddress.contains("street", ignoreCase = true) -> 400.0
-                    complaintAddress.contains("chowk", ignoreCase = true) ||
-                            complaintAddress.contains("bazar", ignoreCase = true) -> 300.0
-                    complaintAddress.contains("complex", ignoreCase = true) ||
-                            complaintAddress.contains("town", ignoreCase = true) -> 800.0
-                    else -> complaintRadiusMeters
-                }
-
-                val allowed = if (found && location != null) {
-                    val dist = FloatArray(1)
-                    android.location.Location.distanceBetween(location.latitude, location.longitude, lat, lng, dist)
-                    dist[0] <= smartRadius
-                } else found  // If no GPS yet but address resolved, allow
-
-                runOnUiThread {
-                    if (allowed) {
-                        tvInstruction.text = "Complaint area verified. Place your finger."
-                        launchBiometric(isCheckIn)
-                    } else {
-                        tvInstruction.text = "Tap to mark your attendance"
-                        showInfo("You are not in the complaint area ($complaintAddress). Please go to the location first.")
-                    }
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    tvInstruction.text = "Tap to mark your attendance"
-                    showInfo("Could not verify location. Please try again.")
-                }
-            }
+                } else { @Suppress("DEPRECATION") val r = geocoder.getFromLocationName("$complaintAddress, Okara", 1); if (!r.isNullOrEmpty()) { lat = r[0].latitude; lng = r[0].longitude; found = true } }
+                val sr = when { complaintAddress.contains("colony", ignoreCase = true) || complaintAddress.contains("block", ignoreCase = true) -> 600.0; complaintAddress.contains("road", ignoreCase = true) || complaintAddress.contains("street", ignoreCase = true) -> 400.0; complaintAddress.contains("chowk", ignoreCase = true) || complaintAddress.contains("bazar", ignoreCase = true) -> 300.0; complaintAddress.contains("complex", ignoreCase = true) || complaintAddress.contains("town", ignoreCase = true) -> 800.0; else -> complaintRadiusMeters }
+                val allowed = if (found && location != null) { val d = FloatArray(1); android.location.Location.distanceBetween(location.latitude, location.longitude, lat, lng, d); d[0] <= sr } else found
+                runOnUiThread { if (allowed) { tvInstruction.text = "Complaint area verified. Place finger."; launchBiometric(isCheckIn) } else { tvInstruction.text = "Tap to mark attendance"; showInfo("Not in complaint area. Go to $complaintAddress.") } }
+            } catch (e: Exception) { runOnUiThread { tvInstruction.text = "Tap to mark attendance"; showInfo("Location check failed. Try again.") } }
         }.start()
     }
 
-    // ───────────────── BIOMETRIC ─────────────────
-
     private fun launchBiometric(checkIn: Boolean) {
         val bm = BiometricManager.from(this)
-        val canAuth = bm.canAuthenticate(
-            BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                    BiometricManager.Authenticators.BIOMETRIC_WEAK
-        )
-        if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
-            showInfo("Biometric not set up. Please go to phone Settings and add your Fingerprint or Face ID first.")
-            return
-        }
-
+        if (bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS) { showInfo("Biometric not set up. Add fingerprint in phone Settings."); return }
         val executor = ContextCompat.getMainExecutor(this)
-        val callback = object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                runOnUiThread { if (checkIn) saveCheckIn() else saveCheckOut() }
-            }
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
-                    errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON) {
-                    runOnUiThread { showInfo("Auth error: $errString") }
-                }
-            }
-            override fun onAuthenticationFailed() {
-                runOnUiThread { showInfo("Fingerprint not recognized. Please try again.") }
-            }
-        }
-
-        val title = if (checkIn) "Mark Check-In" else "Mark Check-Out"
-        val subtitle = if (checkIn) "Place your finger to check in" else "Place your finger to check out"
-
-        BiometricPrompt(this, executor, callback).authenticate(
-            BiometricPrompt.PromptInfo.Builder()
-                .setTitle(title)
-                .setSubtitle(subtitle)
-                .setNegativeButtonText("Cancel")
-                .setAllowedAuthenticators(
-                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                            BiometricManager.Authenticators.BIOMETRIC_WEAK
-                )
-                .build()
-        )
+        BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) { runOnUiThread { if (checkIn) saveCheckIn() else saveCheckOut() } }
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) { if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON) runOnUiThread { showInfo("Auth error: $errString") } }
+            override fun onAuthenticationFailed() { runOnUiThread { showInfo("Fingerprint not recognized. Try again.") } }
+        }).authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(if (checkIn) "Check-In" else "Check-Out").setSubtitle("Place your finger").setNegativeButtonText("Cancel").setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK).build())
     }
 
-    // ───────────────── SAVE ─────────────────
+    // ─────── SAVE (No loadTodayAttendance call — listener handles update) ───────
 
     private fun saveCheckIn() {
+        // Clear early leave state IMMEDIATELY before Firebase write
+        // So listener fires with clean state
+        earlyLeaveApproved = false
+        earlyLeaveRequestKey = ""
+        getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE).edit().remove("approvedLeaveDate").apply()
+        earlyLeaveListener?.let {
+            if (earlyLeaveRequestKey.isNotEmpty())
+                db.getReference("earlyLeaveRequests").child(earlyLeaveRequestKey).removeEventListener(it)
+        }
+
         val now = Calendar.getInstance()
         val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(now.time)
-        val lateThreshold = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, officeStartHour)
-            set(Calendar.MINUTE, officeStartMinute + gracePeriodMinutes)
-        }
+        val lateThreshold = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, officeStartHour); set(Calendar.MINUTE, officeStartMinute + gracePeriodMinutes) }
         val status = if (now.after(lateThreshold)) "LATE" else "ON_TIME"
 
-        val data = mapOf(
+        val newIndex = sessions.size
+        val sessionData = mapOf(
             "checkInTime" to timeStr,
             "checkInTimestamp" to now.timeInMillis,
             "checkOutTime" to "",
             "checkOutTimestamp" to 0L,
             "status" to status,
-            "employeeName" to employeeName,
-            "date" to todayKey
+            "earlyLeave" to false
         )
+
         db.getReference("attendance").child(deviceId).child(todayKey)
-            .setValue(data)
+            .child("sessions").child(newIndex.toString()).setValue(sessionData)
             .addOnSuccessListener {
-                // Clear early leave checkout flag on re-check-in
-                db.getReference("attendance").child(deviceId).child(todayKey)
-                    .updateChildren(mapOf("earlyLeaveCheckout" to false))
                 // Notify admin
                 val locType = if (complaintAddress.isNotEmpty()) "Field: $complaintAddress" else "Office"
                 db.getReference("adminNotifications").push().setValue(mapOf(
                     "message" to "$employeeName checked in — $locType",
-                    "employeeName" to employeeName,
-                    "deviceId" to deviceId,
-                    "timestamp" to System.currentTimeMillis(),
-                    "read" to false
+                    "employeeName" to employeeName, "deviceId" to deviceId,
+                    "timestamp" to System.currentTimeMillis(), "read" to false
                 ))
-                loadTodayAttendance()
+                // Listener will automatically update UI
             }
-            .addOnFailureListener { err -> showInfo("Save failed: ${err.message}") }
+            .addOnFailureListener { showInfo("Check-in failed: ${it.message}") }
     }
 
     private fun saveCheckOut() {
+        if (currentSessionIndex < 0) { showInfo("No active session found."); return }
         val now = Calendar.getInstance()
         val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(now.time)
+        // postShiftMinutes = overtime starts after this many minutes past office end
+        val postShift = (officeEndMinute + postShiftMinutes) % 60
+        val postShiftHour = officeEndHour + (officeEndMinute + postShiftMinutes) / 60
         val overtimeThreshold = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, officeEndHour)
-            set(Calendar.MINUTE, officeEndMinute + 15)
+            set(Calendar.HOUR_OF_DAY, postShiftHour); set(Calendar.MINUTE, postShift)
         }
 
         val updates = mutableMapOf<String, Any>(
@@ -778,273 +567,460 @@ class AttendanceActivity : AppCompatActivity() {
             "checkOutTimestamp" to now.timeInMillis
         )
         if (now.after(overtimeThreshold)) updates["status"] = "OVERTIME"
-        // If early leave approved, mark as re-joinable
-        if (earlyLeaveApproved) {
-            updates["earlyLeaveCheckout"] = true
-            updates["earlyLeaveCheckoutAt"] = now.timeInMillis
-        }
+        if (earlyLeaveApproved) updates["earlyLeave"] = true
 
+        // Update only current session
         db.getReference("attendance").child(deviceId).child(todayKey)
+            .child("sessions").child(currentSessionIndex.toString())
             .updateChildren(updates)
-            .addOnSuccessListener { loadTodayAttendance() }
-            .addOnFailureListener { err -> showInfo("Save failed: ${err.message}") }
+            .addOnFailureListener { showInfo("Check-out failed: ${it.message}") }
+        // Listener will automatically update UI
     }
 
-    // ───────────────── EARLY LEAVE ─────────────────
+    // ─────── EARLY LEAVE ───────
 
     private fun showEarlyLeaveDialog() {
-        if (earlyLeaveApproved) {
-            showInfo("Early leave request is already approved. You can check out now.")
-            return
-        }
-        if (earlyLeaveRequestKey.isNotEmpty() && !earlyLeaveApproved) {
-            showInfo("Request already sent. Waiting for admin approval.")
-            return
-        }
-        if (!isCheckedIn) { showInfo("You haven't checked in yet."); return }
-        if (isCheckedOut) { showInfo("You have already checked out."); return }
-
+        if (earlyLeaveApproved) return
+        if (earlyLeaveRequestKey.isNotEmpty()) { showInfo("Request already sent. Waiting for admin approval."); return }
+        if (!isCurrentlyCheckedIn) { showInfo("You haven't checked in yet."); return }
         val dp = resources.displayMetrics.density
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(px(16, dp), px(12, dp), px(16, dp), px(8, dp))
-        }
-
-        layout.addView(tv("Select reason for early leave:", 13f, Color.parseColor("#444444")).also {
-            it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(10, dp) }
-        })
-
-        val reasons = arrayOf(
-            "Medical Emergency",
-            "Family Emergency",
-            "Personal Work",
-            "Home Emergency",
-            "Travel / Out of City",
-            "Other"
-        )
-
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(px(16,dp), px(12,dp), px(16,dp), px(8,dp)) }
+        layout.addView(tv("Select reason for early leave:", 13f, Color.parseColor("#444444")).also { it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { m -> m.bottomMargin = px(10,dp) } })
+        val reasons = arrayOf("Medical Emergency", "Family Emergency", "Personal Work", "Home Emergency", "Travel / Out of City", "Other")
         val radioGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        reasons.forEachIndexed { i, r ->
-            radioGroup.addView(RadioButton(this).apply {
-                id = i + 100
-                text = r
-                textSize = 14f
-                isChecked = (i == 0)
-                setPadding(0, px(8, dp), 0, px(8, dp))
-            })
-        }
+        reasons.forEachIndexed { i, r -> radioGroup.addView(RadioButton(this).apply { id = i+100; text = r; textSize = 14f; isChecked = (i==0); setPadding(0, px(8,dp), 0, px(8,dp)) }) }
         layout.addView(radioGroup)
-
-        layout.addView(tv("Additional note (optional):", 12f, Color.parseColor("#757575")).also {
-            it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { m -> m.topMargin = px(12, dp); m.bottomMargin = px(4, dp) }
-        })
-
-        val etNote = EditText(this).apply {
-            hint = "e.g. Doctor appointment at 3 PM"
-            inputType = InputType.TYPE_CLASS_TEXT
-            maxLines = 2
-        }
+        layout.addView(tv("Additional note (optional):", 12f, Color.parseColor("#757575")).also { it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { m -> m.topMargin = px(12,dp); m.bottomMargin = px(4,dp) } })
+        val etNote = EditText(this).apply { hint = "e.g. Doctor appointment at 3 PM"; inputType = InputType.TYPE_CLASS_TEXT; maxLines = 2 }
         layout.addView(etNote)
-
-        AlertDialog.Builder(this)
-            .setTitle("Request Early Leave")
-            .setView(layout)
+        AlertDialog.Builder(this).setTitle("Request Early Leave").setView(layout)
             .setPositiveButton("Send Request") { _, _ ->
-                val checkedId = radioGroup.checkedRadioButtonId
-                val selectedIndex = (checkedId - 100).coerceIn(0, reasons.size - 1)
-                val selectedReason = reasons[selectedIndex]
+                val reason = reasons[(radioGroup.checkedRadioButtonId - 100).coerceIn(0, reasons.size-1)]
                 val note = etNote.text.toString().trim()
-
-                val data = mapOf(
-                    "employeeId" to deviceId,
-                    "employeeName" to employeeName,
-                    "reason" to selectedReason,
-                    "note" to note,
-                    "requestedAt" to System.currentTimeMillis(),
-                    "status" to "PENDING",
-                    "date" to todayKey
-                )
-                val sendRequest: (String) -> Unit = { finalName ->
-                    val dataWithName = data.toMutableMap()
-                    dataWithName["employeeName"] = finalName
+                val sendRequest: (String) -> Unit = { name ->
                     val reqRef = db.getReference("earlyLeaveRequests").push()
-                    reqRef.setValue(dataWithName)
+                    reqRef.setValue(mapOf("employeeId" to deviceId, "employeeName" to name, "reason" to reason, "note" to note, "requestedAt" to System.currentTimeMillis(), "status" to "PENDING", "date" to todayKey))
                         .addOnSuccessListener {
                             earlyLeaveRequestKey = reqRef.key ?: ""
                             showInfo("Request sent. Waiting for admin approval...")
                             listenForLeaveApproval(earlyLeaveRequestKey)
                         }
-                        .addOnFailureListener { e -> showInfo("Failed: ${e.message}") }
+                        .addOnFailureListener { showInfo("Failed: ${it.message}") }
                 }
-                if (employeeName.isNotEmpty()) {
-                    sendRequest(employeeName)
-                } else {
-                    db.getReference("employees").child(deviceId)
-                        .child("employeeName").get()
-                        .addOnSuccessListener { snap ->
-                            val name = snap.value?.toString() ?: "Employee"
-                            employeeName = name
-                            sendRequest(name)
-                        }
-                        .addOnFailureListener { sendRequest("Employee") }
-                }
-
+                if (employeeName.isNotEmpty()) sendRequest(employeeName)
+                else db.getReference("employees").child(deviceId).child("employeeName").get()
+                    .addOnSuccessListener { snap -> val n = snap.value?.toString() ?: "Employee"; employeeName = n; sendRequest(n) }
+                    .addOnFailureListener { sendRequest("Employee") }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            .setNegativeButton("Cancel", null).show()
     }
 
-    // ───────────────── FIREBASE ─────────────────
+    private fun listenForLeaveApproval(requestKey: String) {
+        if (requestKey.isEmpty()) return
+        earlyLeaveListener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                val status = snap.child("status").value?.toString() ?: return
+                when (status) {
+                    "APPROVED" -> {
+                        earlyLeaveApproved = true
+                        getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE).edit().putString("approvedLeaveDate", todayKey).apply()
+                        runOnUiThread {
+                            showApprovedButton()
+                            AlertDialog.Builder(this@AttendanceActivity).setTitle("Request Approved ✅").setMessage("Your early leave has been approved. You can now check out.")
+                                .setPositiveButton("OK", null).setCancelable(false).show()
+                        }
+                    }
+                    "REJECTED" -> {
+                        earlyLeaveApproved = false; earlyLeaveRequestKey = ""
+                        runOnUiThread {
+                            btnEarlyLeave.text = "Request Early Leave"; btnEarlyLeave.isEnabled = true; btnEarlyLeave.setTextColor(Color.parseColor("#E65100"))
+                            AlertDialog.Builder(this@AttendanceActivity).setTitle("Request Rejected").setMessage("Early leave was rejected. Please contact admin.")
+                                .setPositiveButton("OK", null).setCancelable(false).show()
+                        }
+                    }
+                }
+            }
+            override fun onCancelled(e: DatabaseError) {}
+        }
+        db.getReference("earlyLeaveRequests").child(requestKey).addValueEventListener(earlyLeaveListener!!)
+    }
+
+    private fun showApprovedButton() {
+        btnEarlyLeave.text = "Leave Approved  Check Out Now"
+        btnEarlyLeave.isEnabled = false; btnEarlyLeave.visibility = View.VISIBLE
+        btnEarlyLeave.setTextColor(Color.parseColor("#2E7D32"))
+    }
+
+    private fun checkApprovedLeave() {
+        val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
+        if (prefs.getString("approvedLeaveDate", "") == todayKey) { earlyLeaveApproved = true; showApprovedButton() }
+        db.getReference("earlyLeaveRequests").orderByChild("date").equalTo(todayKey).get()
+            .addOnSuccessListener { snap ->
+                for (req in snap.children) {
+                    val empId = req.child("employeeId").value?.toString() ?: ""
+                    val status = req.child("status").value?.toString() ?: ""
+                    if (empId == deviceId && status == "APPROVED") {
+                        earlyLeaveApproved = true; earlyLeaveRequestKey = req.key ?: ""
+                        prefs.edit().putString("approvedLeaveDate", todayKey).apply()
+                        runOnUiThread { showApprovedButton() }; break
+                    }
+                }
+            }
+    }
+
+    // ─────── FIREBASE LOAD ───────
 
     private fun loadOfficeSettings() {
-        db.getReference("officeSettings").get().addOnSuccessListener { snap ->
-            officeStartHour = (snap.child("startHour").value as? Long)?.toInt() ?: 10
-            officeStartMinute = (snap.child("startMinute").value as? Long)?.toInt() ?: 0
-            officeEndHour = (snap.child("endHour").value as? Long)?.toInt() ?: 22
-            officeEndMinute = (snap.child("endMinute").value as? Long)?.toInt() ?: 0
-            gracePeriodMinutes = (snap.child("gracePeriodMinutes").value as? Long)?.toInt() ?: 15
-            preShiftMinutes = (snap.child("preShiftMinutes").value as? Long)?.toInt() ?: 60
-            complaintRadiusMeters = (snap.child("complaintRadiusMeters").value as? Number)?.toDouble() ?: 500.0
-
-            val sH = if (officeStartHour > 12) officeStartHour - 12 else officeStartHour
-            val eH = if (officeEndHour > 12) officeEndHour - 12 else officeEndHour
-            val sAMPM = if (officeStartHour >= 12) "PM" else "AM"
-            val eAMPM = if (officeEndHour >= 12) "PM" else "AM"
-            tvOfficeHours.text = "Office Hours: $sH:${String.format(Locale.getDefault(), "%02d", officeStartMinute)} $sAMPM — $eH:${String.format(Locale.getDefault(), "%02d", officeEndMinute)} $eAMPM"
+        officeSettingsListener?.let {
+            db.getReference("officeSettings").removeEventListener(it)
         }
-    }
-
-    private fun loadTodayAttendance() {
-        db.getReference("attendance").child(deviceId).child(todayKey).get()
-            .addOnSuccessListener { snap ->
-                val checkIn = snap.child("checkInTime").value?.toString() ?: ""
-                val checkOut = snap.child("checkOutTime").value?.toString() ?: ""
-                val status = snap.child("status").value?.toString() ?: ""
-
-                isCheckedIn = checkIn.isNotEmpty()
-                isCheckedOut = checkOut.isNotEmpty()
-
-                tvCheckInTime.text = if (checkIn.isNotEmpty()) checkIn else "— —"
-                tvCheckOutTime.text = if (checkOut.isNotEmpty()) checkOut else "— —"
-
-                when (status) {
-                    "ON_TIME" -> badge("On Time", Color.parseColor("#2E7D32"), Color.parseColor("#E8F5E9"))
-                    "LATE" -> badge("Late", Color.parseColor("#C62828"), Color.parseColor("#FFEBEE"))
-                    "OVERTIME" -> badge("Overtime", Color.parseColor("#1565C0"), Color.parseColor("#E3F2FD"))
-                    else -> badge("Not Marked", Color.parseColor("#9E9E9E"), Color.parseColor("#F5F5F5"))
-                }
-
-                when {
-                    !isCheckedIn -> {
-                        btnAction.text = "Mark Check-In"
-                        // ── CHECK-IN COLOR: Change "#2E7D32" to any color ──
-                        btnAction.background = GradientDrawable().apply {
-                            shape = GradientDrawable.RECTANGLE
-                            cornerRadius = 12f * resources.displayMetrics.density
-                            setColor(Color.parseColor("#2E7D32"))
-                        }
-                        btnAction.isEnabled = true
-                        tvInstruction.text = "Tap to mark Check-In\nFingerprint or Face ID required"
-                        btnEarlyLeave.visibility = android.view.View.GONE
-                    }
-                    !isCheckedOut -> {
-                        btnAction.text = "Mark Check-Out"
-                        // ── CHECK-OUT COLOR: Change "#C62828" to any color ──
-                        btnAction.background = GradientDrawable().apply {
-                            shape = GradientDrawable.RECTANGLE
-                            cornerRadius = 12f * resources.displayMetrics.density
-                            setColor(Color.parseColor("#C62828"))
-                        }
-                        btnAction.isEnabled = true
-                        tvInstruction.text = "Checked in! Tap to mark Check-Out\nFingerprint or Face ID required"
-                        btnEarlyLeave.visibility = android.view.View.VISIBLE
-                    }
-                    else -> {
-                        val isEarlyLeaveCheckout = snap.child("earlyLeaveCheckout").value as? Boolean ?: false
-                        if (isEarlyLeaveCheckout) {
-                            // Allow re-check-in
-                            isCheckedIn = false
-                            isCheckedOut = false
-                            earlyLeaveApproved = false
-                            earlyLeaveRequestKey = ""
-                            btnAction.text = "Mark Check-In"
-                            btnAction.background = GradientDrawable().apply {
-                                shape = GradientDrawable.RECTANGLE
-                                cornerRadius = 12f * resources.displayMetrics.density
-                                setColor(Color.parseColor("#2E7D32"))
-                            }
-                            btnAction.isEnabled = true
-                            tvInstruction.text = "Welcome back! Tap to re-check-in"
-                            btnEarlyLeave.visibility = android.view.View.GONE
-                        } else {
-                            btnAction.text = "Attendance Complete"
-                            // ── COMPLETE COLOR: Change "#9E9E9E" to any color ──
-                            btnAction.background = GradientDrawable().apply {
-                                shape = GradientDrawable.RECTANGLE
-                                cornerRadius = 12f * resources.displayMetrics.density
-                                setColor(Color.parseColor("#9E9E9E"))
-                            }
-                            btnAction.isEnabled = false
-                            tvInstruction.text = "Today attendance recorded successfully"
-                            btnEarlyLeave.visibility = android.view.View.GONE
-                        }
-                    }
-                }
+        officeSettingsListener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                officeStartHour = (snap.child("startHour").value as? Long)?.toInt() ?: 10
+                officeStartMinute = (snap.child("startMinute").value as? Long)?.toInt() ?: 0
+                officeEndHour = (snap.child("endHour").value as? Long)?.toInt() ?: 22
+                officeEndMinute = (snap.child("endMinute").value as? Long)?.toInt() ?: 0
+                gracePeriodMinutes = (snap.child("gracePeriodMinutes").value as? Long)?.toInt() ?: 15
+                preShiftMinutes = (snap.child("preShiftMinutes").value as? Long)?.toInt() ?: 60
+                postShiftMinutes = (snap.child("postShiftMinutes").value as? Long)?.toInt() ?: 60
+                complaintRadiusMeters = (snap.child("complaintRadiusMeters").value as? Number)?.toDouble() ?: 500.0
+                val sH = if (officeStartHour > 12) officeStartHour-12 else officeStartHour
+                val eH = if (officeEndHour > 12) officeEndHour-12 else officeEndHour
+                tvOfficeHours.text = "Office Hours: $sH:${String.format(Locale.getDefault(), "%02d", officeStartMinute)} ${if (officeStartHour >= 12) "PM" else "AM"} — $eH:${String.format(Locale.getDefault(), "%02d", officeEndMinute)} ${if (officeEndHour >= 12) "PM" else "AM"}"
+                updateUI()
             }
+            override fun onCancelled(e: DatabaseError) {}
+        }
+        db.getReference("officeSettings").addValueEventListener(officeSettingsListener!!)
     }
 
     private fun loadMonthlyStats() {
         val now = Calendar.getInstance()
         val monthKey = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(now.time)
-
-        // Total days in this month (e.g. 31 for August, 30 for September)
         val todayDay = now.get(Calendar.DAY_OF_MONTH)
-
-        db.getReference("attendance").child(deviceId)
-            .orderByKey()
-            .startAt("${monthKey}-01")
-            .endAt("${monthKey}-31")
-            .get()
+        db.getReference("attendance").child(deviceId).orderByKey().startAt("${monthKey}-01").endAt("${monthKey}-31").get()
             .addOnSuccessListener { snap ->
                 val presentDates = mutableSetOf<String>()
                 var late = 0
-
                 for (day in snap.children) {
-                    val ci = day.child("checkInTime").value?.toString() ?: ""
-                    val st = day.child("status").value?.toString() ?: ""
-                    if (ci.isNotEmpty()) {
-                        presentDates.add(day.key ?: "")
-                        if (st == "LATE") late++
+                    val dayKey = day.key ?: continue
+                    val sessSnap = day.child("sessions")
+                    if (sessSnap.exists()) {
+                        var hadCheckIn = false
+                        for (s in sessSnap.children) {
+                            if (s.child("checkInTime").value?.toString()?.isNotEmpty() == true) {
+                                hadCheckIn = true
+                                if (s.child("status").value?.toString() == "LATE") late++
+                            }
+                        }
+                        if (hadCheckIn) presentDates.add(dayKey)
+                    } else {
+                        val ci = day.child("checkInTime").value?.toString() ?: ""
+                        val st = day.child("status").value?.toString() ?: ""
+                        if (ci.isNotEmpty()) { presentDates.add(dayKey); if (st == "LATE") late++ }
                     }
                 }
-
-                // Absent = days from 1st to yesterday with no record
-                // (Today is excluded — employee may still check in today)
+                // Absent = 0 if no records. Count from first check-in date
                 var absent = 0
-                for (d in 1 until todayDay) {
-                    val dayKey = "${monthKey}-${String.format(Locale.getDefault(), "%02d", d)}"
-                    if (dayKey !in presentDates) absent++
+                if (presentDates.isNotEmpty()) {
+                    val firstDay = try {
+                        presentDates.sorted().first().split("-").last().toInt()
+                    } catch (e: Exception) { todayDay }
+                    for (d in firstDay until todayDay) {
+                        val dk = "${monthKey}-${String.format(Locale.getDefault(), "%02d", d)}"
+                        if (dk !in presentDates) absent++
+                    }
                 }
-
                 val present = presentDates.size
-                // Score = Present / Days passed so far (including today)
                 val score = if (todayDay > 0) ((present.toFloat() / todayDay) * 100).toInt() else 0
-
-                tvPresentVal.text = "$present"
-                tvAbsentVal.text = "$absent"
-                tvLateVal.text = "$late"
-                tvScoreVal.text = "$score%"
+                tvPresentVal.text = "$present"; tvAbsentVal.text = "$absent"
+                tvLateVal.text = "$late"; tvScoreVal.text = "$score%"
             }
     }
 
-    private fun badge(text: String, textColor: Int, bgColor: Int) {
-        tvStatusBadge.text = text
-        tvStatusBadge.setTextColor(textColor)
+    // ─────── TIME LOG ───────
+
+    private fun parseTimeMins(timeStr: String): Int {
+        return try {
+            val lower = timeStr.lowercase(Locale.getDefault()).trim()
+            val isPm = lower.contains("pm")
+            val clean = lower.replace("am","").replace("pm","").trim()
+            val parts = clean.split(":")
+            var hour = parts[0].trim().toInt()
+            val min = if (parts.size > 1) parts[1].trim().toInt() else 0
+            if (isPm && hour != 12) hour += 12
+            if (!isPm && hour == 12) hour = 0
+            hour * 60 + min
+        } catch (e: Exception) { -1 }
+    }
+
+    private fun showEmployeeTimeLog() {
+        val monthKey = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
         val dp = resources.displayMetrics.density
-        tvStatusBadge.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 20f * dp
-            setColor(bgColor)
+        val scroll = android.widget.ScrollView(this)
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(px(16,dp), px(8,dp), px(16,dp), px(8,dp)) }
+        scroll.addView(container)
+        container.addView(tv("Loading...", 13f, Color.parseColor("#9E9E9E")).also { it.gravity = Gravity.CENTER })
+        AlertDialog.Builder(this).setTitle("My Time Log").setView(scroll).setPositiveButton("Close", null).show()
+
+        db.getReference("officeSettings").get().addOnSuccessListener { settingsSnap ->
+            val freshEndHour = (settingsSnap.child("endHour").value as? Long)?.toInt() ?: officeEndHour
+            val freshEndMin = (settingsSnap.child("endMinute").value as? Long)?.toInt() ?: officeEndMinute
+            val officeEndMins = freshEndHour * 60 + freshEndMin
+
+            db.getReference("attendance").child(deviceId).orderByKey().startAt("${monthKey}-01").endAt("${monthKey}-31")
+                .get().addOnSuccessListener { snap ->
+                    container.removeAllViews()
+                    var count = 0
+                    val officeStartMins = freshEndHour * 0 + officeStartHour * 60 + officeStartMinute
+
+                    for (daySnap in snap.children) {
+                        val dayKey = daySnap.key ?: continue
+                        val sessSnap = daySnap.child("sessions")
+
+                        // Get check-in records (all sessions)
+                        val checkIns = if (sessSnap.exists()) {
+                            sessSnap.children.mapNotNull { s ->
+                                val ci = s.child("checkInTime").value?.toString() ?: ""
+                                val st = s.child("status").value?.toString() ?: ""
+                                if (ci.isNotEmpty() && st == "LATE") ci else null
+                            }
+                        } else {
+                            val ci = daySnap.child("checkInTime").value?.toString() ?: ""
+                            val st = daySnap.child("status").value?.toString() ?: ""
+                            if (ci.isNotEmpty() && st == "LATE") listOf(ci) else emptyList()
+                        }
+
+                        for (ci in checkIns) {
+                            val ciMins = parseTimeMins(ci)
+                            val graceMins = officeStartHour * 60 + officeStartMinute + gracePeriodMinutes
+                            val lateMins = if (ciMins > graceMins) ciMins - graceMins else 0
+                            val dateFmt = try {
+                                val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(dayKey)
+                                SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!)
+                            } catch (e: Exception) { dayKey }
+
+                            count++
+                            val lateHours = lateMins / 60
+                            val lateRemMins = lateMins % 60
+                            val lateText = when {
+                                lateMins <= 0 -> "Late"
+                                lateHours > 0 && lateRemMins > 0 -> "${lateHours}h ${lateRemMins}min late"
+                                lateHours > 0 -> "${lateHours}h late"
+                                else -> "${lateMins}min late"
+                            }
+                            val row = LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                                setPadding(0, px(10,dp), 0, px(10,dp))
+                                setBackgroundColor(if (count%2==0) Color.parseColor("#FAFAFA") else Color.WHITE)
+                            }
+                            row.addView(tv(dateFmt, 12f, Color.parseColor("#333333"), bold = true).also {
+                                it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                            })
+                            row.addView(tv("Arrived: $ci", 11f, Color.parseColor("#555555")).also {
+                                it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                            })
+                            row.addView(tv(lateText, 11f, Color.parseColor("#C62828"), bold = true))
+                            container.addView(row)
+                            container.addView(View(this).apply {
+                                setBackgroundColor(Color.parseColor("#EEEEEE"))
+                                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+                            })
+                        }
+                    }
+                    if (count == 0) {
+                        container.addView(tv("No late records this month.", 13f, Color.parseColor("#9E9E9E")).also {
+                            it.gravity = Gravity.CENTER; it.setPadding(0, px(20,dp), 0, px(20,dp))
+                        })
+                    } else {
+                        container.addView(tv("Total Late: $count times", 13f, Color.parseColor("#C62828"), bold = true).also {
+                            it.setPadding(0, px(10,dp), 0, 0)
+                        })
+                    }
+                }
         }
+    }
+
+    // ─────── STAT DETAIL ───────
+
+    private fun showStatDetail(type: String) {
+        val monthKey = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
+        val todayDay = Calendar.getInstance().get(Calendar.DAY_OF_MONTH)
+        db.getReference("attendance").child(deviceId)
+            .orderByKey().startAt("${monthKey}-01").endAt("${monthKey}-31")
+            .get().addOnSuccessListener { snap ->
+                val dp = resources.displayMetrics.density
+                val scroll = android.widget.ScrollView(this)
+                val container = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(px(16,dp), px(8,dp), px(16,dp), px(8,dp))
+                }
+                scroll.addView(container)
+                var count = 0
+
+                // Build records list - ALL sessions across ALL days
+                data class AttRecord(val date: String, val ci: String, val co: String, val status: String)
+                val allRecords = mutableListOf<AttRecord>()
+                val presentDays = mutableSetOf<String>()
+
+                for (daySnap in snap.children) {
+                    val dayKey = daySnap.key ?: continue
+                    val sessSnap = daySnap.child("sessions")
+                    if (sessSnap.exists()) {
+                        for (s in sessSnap.children) {
+                            val ci = s.child("checkInTime").value?.toString() ?: ""
+                            val co = s.child("checkOutTime").value?.toString() ?: ""
+                            val st = s.child("status").value?.toString() ?: ""
+                            if (ci.isNotEmpty()) {
+                                allRecords.add(AttRecord(dayKey, ci, co, st))
+                                presentDays.add(dayKey)
+                            }
+                        }
+                    } else {
+                        val ci = daySnap.child("checkInTime").value?.toString() ?: ""
+                        val co = daySnap.child("checkOutTime").value?.toString() ?: ""
+                        val st = daySnap.child("status").value?.toString() ?: ""
+                        if (ci.isNotEmpty()) {
+                            allRecords.add(AttRecord(dayKey, ci, co, st))
+                            presentDays.add(dayKey)
+                        }
+                    }
+                }
+                // For backward compat with absent logic
+                val presentMap = presentDays.associateWith { "" }
+                val statusMap = mutableMapOf<String, String>()
+                allRecords.forEach { statusMap[it.date] = it.status }
+
+                val firstPresentDay = if (presentDays.isNotEmpty()) {
+                    try { presentDays.sorted().first().split("-").last().toInt() } catch (e: Exception) { todayDay }
+                } else todayDay
+
+                // Absent days
+                if (type == "Absent") {
+                    val absentList = if (presentDays.isEmpty()) emptyList() else
+                        (firstPresentDay until todayDay).map { d -> "${monthKey}-${String.format(Locale.getDefault(), "%02d", d)}" }.filter { it !in presentDays }
+                    absentList.forEach { date ->
+                        count++
+                        val dateFmt = try { val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(date); SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!) } catch (e: Exception) { date }
+                        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, px(10,dp), 0, px(10,dp)); setBackgroundColor(if (count%2==0) Color.parseColor("#F8F8F8") else Color.WHITE) }
+                        row.addView(tv(dateFmt, 13f, Color.parseColor("#333333"), bold = true).also { it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                        row.addView(tv("No attendance", 12f, Color.parseColor("#C62828")))
+                        container.addView(row)
+                        container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
+                    }
+                } else {
+                    when (type) {
+                        "Present" -> {
+                            // One row per DAY (not per session)
+                            presentDays.sorted().forEach { date ->
+                                val dayRecs = allRecords.filter { it.date == date }
+                                val firstCi = dayRecs.firstOrNull()?.ci ?: ""
+                                val lastCo = dayRecs.lastOrNull { it.co.isNotEmpty() }?.co ?: ""
+                                val daySt = dayRecs.firstOrNull()?.status ?: ""
+                                count++
+                                val dateFmt = try { val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(date); SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!) } catch (e: Exception) { date }
+                                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, px(10,dp), 0, px(10,dp)); setBackgroundColor(if (count%2==0) Color.parseColor("#F8F8F8") else Color.WHITE) }
+                                row.addView(tv(dateFmt, 13f, Color.parseColor("#333333"), bold = true).also { it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                                val detail = if (lastCo.isNotEmpty()) "$firstCi → $lastCo" else "In: $firstCi"
+                                val sessCount = if (dayRecs.size > 1) " (${dayRecs.size} sessions)" else ""
+                                val dColor = when(daySt) { "LATE" -> "#E65100"; "OVERTIME" -> "#1565C0"; else -> "#2E7D32" }
+                                row.addView(tv(detail + sessCount, 12f, Color.parseColor(dColor)))
+                                container.addView(row)
+                                container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
+                            }
+                        }
+                        "Late" -> {
+                            allRecords.filter { it.status == "LATE" }.sortedBy { it.date }.forEach { rec ->
+                                count++
+                                val dateFmt = try { val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(rec.date); SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!) } catch (e: Exception) { rec.date }
+                                // Calculate late duration
+                                val ciMins = parseTimeMins(rec.ci)
+                                val officeMins = officeStartHour * 60 + officeStartMinute + gracePeriodMinutes
+                                val lateMins = if (ciMins > officeMins) ciMins - officeMins else 0
+                                val lateHours = lateMins / 60
+                                val lateRemMins = lateMins % 60
+                                val lateText = when {
+                                    lateHours > 0 && lateRemMins > 0 -> "${lateHours}h ${lateRemMins}min late"
+                                    lateHours > 0 -> "${lateHours}h late"
+                                    lateMins > 0 -> "${lateMins}min late"
+                                    else -> "Late"
+                                }
+                                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, px(10,dp), 0, px(10,dp)); setBackgroundColor(if (count%2==0) Color.parseColor("#F8F8F8") else Color.WHITE) }
+                                row.addView(tv(dateFmt, 13f, Color.parseColor("#333333"), bold = true).also { it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                                val detailView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                                detailView.addView(tv("In: ${rec.ci}", 11f, Color.parseColor("#555555")))
+                                detailView.addView(tv(lateText, 12f, Color.parseColor("#C62828"), bold = true))
+                                row.addView(detailView)
+                                container.addView(row)
+                                container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
+                            }
+                        }
+                        else -> {
+                            // Score - show each day summary
+                            presentDays.sorted().forEach { date ->
+                                val dayRecs = allRecords.filter { it.date == date }
+                                val daySt = dayRecs.firstOrNull()?.status ?: ""
+                                count++
+                                val dateFmt = try { val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(date); SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!) } catch (e: Exception) { date }
+                                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, px(10,dp), 0, px(10,dp)); setBackgroundColor(if (count%2==0) Color.parseColor("#F8F8F8") else Color.WHITE) }
+                                row.addView(tv(dateFmt, 13f, Color.parseColor("#333333"), bold = true).also { it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+                                val badge = when(daySt) { "ON_TIME" -> "On Time"; "LATE" -> "Late"; "OVERTIME" -> "Overtime"; else -> "Present" }
+                                val dColor = when(daySt) { "LATE" -> "#E65100"; "OVERTIME" -> "#1565C0"; else -> "#2E7D32" }
+                                row.addView(tv(badge, 12f, Color.parseColor(dColor)))
+                                container.addView(row)
+                                container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
+                            }
+                        }
+                    }
+                }
+
+                if (count == 0) container.addView(tv("No records.", 13f, Color.parseColor("#9E9E9E")).also {
+                    it.gravity = Gravity.CENTER; it.setPadding(0, px(20,dp), 0, px(20,dp))
+                })
+
+                val title = when(type) { "Present" -> "Present Days — $count"; "Absent" -> "Absent Days — $count"; "Late" -> "Late Arrivals — $count"; else -> "Monthly Log" }
+                AlertDialog.Builder(this).setTitle(title).setView(scroll).setPositiveButton("Close", null).show()
+            }
+    }
+
+    // ─────── HELPERS ───────
+
+    override fun onResume() {
+        super.onResume()
+        val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
+        if (prefs.getString("approvedLeaveDate", "") == todayKey) {
+            earlyLeaveApproved = true
+            btnEarlyLeave.post { showApprovedButton() }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        attendanceListener?.let { db.getReference("attendance").child(deviceId).child(todayKey).removeEventListener(it) }
+        earlyLeaveListener?.let { if (earlyLeaveRequestKey.isNotEmpty()) db.getReference("earlyLeaveRequests").child(earlyLeaveRequestKey).removeEventListener(it) }
+        officeSettingsListener?.let { db.getReference("officeSettings").removeEventListener(it) }
+    }
+
+    private fun showInfo(msg: String) { AlertDialog.Builder(this).setMessage(msg).setPositiveButton("OK", null).show() }
+    private fun px(v: Int, dp: Float) = (v * dp).toInt()
+    private fun tv(text: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply { this.text = text; textSize = size; setTextColor(color); if (bold) setTypeface(null, android.graphics.Typeface.BOLD) }
+    private fun timeCard(label: String, bg: Int, textColor: Int, dp: Float) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(px(14,dp), px(12,dp), px(14,dp), px(12,dp))
+        background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 10f*dp; setColor(bg) }
+        addView(tv(label, 13f, Color.parseColor("#333333")))
+        addView(tv("— —", 18f, textColor, bold = true).also { it.tag = "time"; it.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { m -> m.topMargin = px(4,dp) } })
+    }
+    private fun ring(size: Int, color: Int, stroke: Float, dp: Float) = View(this).apply {
+        layoutParams = FrameLayout.LayoutParams(size, size).also { it.gravity = Gravity.CENTER }
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT); setStroke((stroke*dp).toInt(), color); alpha = 150 }
+    }
+    private fun statBox(valView: TextView, label: String, dp: Float) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+        setPadding(px(8,dp), px(14,dp), px(8,dp), px(14,dp))
+        background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.WHITE); setStroke(px(1,dp), Color.parseColor("#DDDDDD")) }
+        isClickable = true; isFocusable = true
+        setOnClickListener { showStatDetail(label) }
+        addView(valView)
+        addView(tv(label, 12f, Color.parseColor("#333333")).also { it.gravity = Gravity.CENTER })
     }
 }
