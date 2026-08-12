@@ -722,17 +722,24 @@ class AttendanceActivity : AppCompatActivity() {
                 }
                 // Absent = 0 if no records. Count from first check-in date
                 var absent = 0
-                if (presentDates.isNotEmpty()) {
-                    val firstDay = try {
+                val firstDay = if (presentDates.isNotEmpty()) {
+                    try {
                         presentDates.sorted().first().split("-").last().toInt()
                     } catch (e: Exception) { todayDay }
+                } else todayDay
+                if (presentDates.isNotEmpty()) {
                     for (d in firstDay until todayDay) {
                         val dk = "${monthKey}-${String.format(Locale.getDefault(), "%02d", d)}"
                         if (dk !in presentDates) absent++
                     }
                 }
                 val present = presentDates.size
-                val score = if (todayDay > 0) ((present.toFloat() / todayDay) * 100).toInt() else 0
+                // Score also counted only from the first check-in date
+                // onward — same window as Absent — so a fresh install
+                // mid-month doesn't drag the score down artificially.
+                val scoreDays = if (presentDates.isEmpty()) 1 else
+                    (todayDay - firstDay + 1).coerceAtLeast(1)
+                val score = if (scoreDays > 0) ((present.toFloat() / scoreDays) * 100).toInt() else 0
                 tvPresentVal.text = "$present"; tvAbsentVal.text = "$absent"
                 tvLateVal.text = "$late"; tvScoreVal.text = "$score%"
             }
