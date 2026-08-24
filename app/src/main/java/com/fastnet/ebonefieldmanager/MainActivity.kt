@@ -6,6 +6,8 @@ import android.graphics.BitmapFactory
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Button
@@ -20,6 +22,10 @@ import android.os.Build
 import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,6 +48,21 @@ class MainActivity : AppCompatActivity() {
     // crash on Android 14 when the request hadn't been answered yet).
     private var trackingServiceStarted = false
     private var hasProceeded = false
+
+    // Only refreshes the dashboard counters at midnight.
+    // It never deletes any Firebase data.
+    private val counterMidnightHandler =
+        Handler(Looper.getMainLooper())
+
+    private val counterMidnightRunnable =
+        object : Runnable {
+            override fun run() {
+                if (hasProceeded) {
+                    refreshDashboard()
+                }
+                scheduleCounterMidnightRefresh()
+            }
+        }
 
     companion object {
         private const val LOCATION_PERMISSION_REQUEST_CODE = 2001
@@ -170,8 +191,51 @@ class MainActivity : AppCompatActivity() {
         resolvedCountText = findViewById(R.id.resolvedCountText)
         liveLocationText = findViewById(R.id.liveLocationText)
 
+        /*
+         * PENDING BOX
+         *
+         * Opens the EXISTING ComplaintListActivity.
+         * No new list or layout is created.
+         */
+        (pendingCountText.parent as? android.view.View)?.setOnClickListener {
+            startActivity(
+                Intent(
+                    this,
+                    ComplaintListActivity::class.java
+                )
+            )
+        }
+
+        pendingCountText.setOnClickListener {
+            startActivity(
+                Intent(
+                    this,
+                    ComplaintListActivity::class.java
+                )
+            )
+        }
+
+        /*
+         * RESOLVED BOX
+         *
+         * Opens the EXISTING ResolvedLogActivity.
+         */
+        (resolvedCountText.parent as? android.view.View)?.setOnClickListener {
+            startActivity(
+                Intent(
+                    this,
+                    ResolvedLogActivity::class.java
+                )
+            )
+        }
+
         resolvedCountText.setOnClickListener {
-            startActivity(Intent(this, ResolvedLogActivity::class.java))
+            startActivity(
+                Intent(
+                    this,
+                    ResolvedLogActivity::class.java
+                )
+            )
         }
 
         val customerIssueText = findViewById<TextView>(R.id.customerIssueText)
@@ -347,6 +411,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isAppInForeground = true
+        if (hasProceeded) {
+            refreshDashboard()
+        }
         // Catches the case where the user granted Location via Settings
         // while the app was paused/blocked on the gate screen.
         if (!hasProceeded && hasLocationPermission()) {
@@ -387,60 +454,348 @@ class MainActivity : AppCompatActivity() {
     private fun refreshDashboard() {
         val employeeName = EmployeeSession.getEmployeeName()
 
-        com.google.firebase.database.FirebaseDatabase
+        /*
+         * EXISTING PENDING / ACTIVE COMPLAINT LOGIC
+         *
+         * Pending complaints are NOT reset at midnight.
+         * If they are still unresolved tomorrow morning, they remain
+         * visible and continue to be counted.
+         */
+        FirebaseDatabase
             .getInstance()
             .getReference("complaints")
             .addValueEventListener(
-                object : com.google.firebase.database.ValueEventListener {
+                object : ValueEventListener {
 
                     override fun onDataChange(
-                        snapshot: com.google.firebase.database.DataSnapshot
+                        snapshot: DataSnapshot
                     ) {
-                        val employeeComplaints = mutableListOf<Complaint>()
+                        val employeeComplaints =
+                            mutableListOf<Complaint>()
+
                         var pendingCount = 0
-                        var resolvedCount = 0
 
                         for (child in snapshot.children) {
-                            val complaint = child.getValue(Complaint::class.java)
-                            if (complaint != null &&
-                                complaint.assignedTo.equals(employeeName, true)
+
+                            val complaint =
+                                child.getValue(
+                                    Complaint::class.java
+                                )
+
+                            if (
+                                complaint != null &&
+                                complaint.assignedTo.equals(
+                                    employeeName,
+                                    true
+                                )
                             ) {
-                                if (complaint.status.equals("Resolved", true)) {
-                                    resolvedCount++
-                                } else {
+
+                                if (
+                                    !complaint.status.equals(
+                                        "Resolved",
+                                        true
+                                    )
+                                ) {
                                     pendingCount++
-                                    employeeComplaints.add(complaint)
+
+                                    employeeComplaints.add(
+                                        complaint
+                                    )
                                 }
                             }
                         }
 
-                        employeeComplaints.sortBy { it.displayOrder }
-                        pendingCountText.text = pendingCount.toString()
-                        resolvedCountText.text = resolvedCount.toString()
+                        employeeComplaints.sortBy {
+                            it.displayOrder
+                        }
 
-                        if (employeeComplaints.isNotEmpty()) {
-                            val complaint = employeeComplaints[0]
-                            currentComplaint = complaint
-                            customerNameText.text = complaint.userId
-                            customerAddressText.text = complaint.address
-                            customerPhoneText.text = complaint.phoneNumber
+                        pendingCountText.text =
+                            pendingCount.toString()
 
-                            // Active Complaint ab Dashboard par visible hai — "seen" mark karne ki koshish karo
+                        /*
+                         * The FIRST complaint remains the Dashboard's
+                         * main/current complaint exactly as before.
+                         *
+                         * ComplaintListActivity is only an additional
+                         * analysis/list view opened from the Pending Box.
+                         */
+                        if (
+                            employeeComplaints.isNotEmpty()
+                        ) {
+
+                            val complaint =
+                                employeeComplaints[0]
+
+                            currentComplaint =
+                                complaint
+
+                            customerNameText.text =
+                                complaint.userId
+
+                            customerAddressText.text =
+                                complaint.address
+
+                            customerPhoneText.text =
+                                complaint.phoneNumber
+
                             markCurrentComplaintSeen()
+
                         } else {
+
                             currentComplaint = null
-                            customerNameText.text = "No Complaint"
-                            customerAddressText.text = "-"
-                            customerPhoneText.text = "-"
+
+                            customerNameText.text =
+                                "No Complaint"
+
+                            customerAddressText.text =
+                                "-"
+
+                            customerPhoneText.text =
+                                "-"
                         }
                     }
 
                     override fun onCancelled(
-                        error: com.google.firebase.database.DatabaseError
-                    ) {}
+                        error: DatabaseError
+                    ) {
+                    }
+                }
+            )
+
+        /*
+         * Resolved Box is deliberately separate from Pending.
+         * It counts only complaints that are actually present in
+         * resolvedComplaints and were resolved TODAY.
+         */
+        loadTodayResolvedCount()
+
+        /*
+         * Pending does NOT reset at midnight.
+         * Resolved Box does recalculate at midnight.
+         */
+        scheduleCounterMidnightRefresh()
+    }
+
+    /**
+     * Dashboard Resolved Box:
+     *
+     * 10:00 AM -> 12:00 AM = today's resolved count
+     * 12:00 AM -> 0 for the new day
+     *
+     * Firebase history is never deleted.
+     */
+    private fun loadTodayResolvedCount() {
+
+        val employeeName =
+            EmployeeSession.getEmployeeName()
+
+        val now =
+            java.util.Calendar.getInstance()
+
+        val today10AM =
+            java.util.Calendar.getInstance().apply {
+                set(
+                    java.util.Calendar.HOUR_OF_DAY,
+                    10
+                )
+                set(
+                    java.util.Calendar.MINUTE,
+                    0
+                )
+                set(
+                    java.util.Calendar.SECOND,
+                    0
+                )
+                set(
+                    java.util.Calendar.MILLISECOND,
+                    0
+                )
+            }
+
+        val tomorrow12AM =
+            java.util.Calendar.getInstance().apply {
+                add(
+                    java.util.Calendar.DAY_OF_YEAR,
+                    1
+                )
+                set(
+                    java.util.Calendar.HOUR_OF_DAY,
+                    0
+                )
+                set(
+                    java.util.Calendar.MINUTE,
+                    0
+                )
+                set(
+                    java.util.Calendar.SECOND,
+                    0
+                )
+                set(
+                    java.util.Calendar.MILLISECOND,
+                    0
+                )
+            }
+
+        val todayStart =
+            today10AM.timeInMillis
+
+        val tomorrowStart =
+            tomorrow12AM.timeInMillis
+
+        /*
+         * Before 10 AM, there is no current office-day
+         * resolved count.
+         */
+        if (now.timeInMillis < todayStart) {
+            resolvedCountText.text = "0"
+            return
+        }
+
+        FirebaseDatabase
+            .getInstance()
+            .getReference(
+                "resolvedComplaints"
+            )
+            .addValueEventListener(
+                object : ValueEventListener {
+
+                    override fun onDataChange(
+                        snapshot: DataSnapshot
+                    ) {
+
+                        var todayResolvedCount = 0
+
+                        for (child in snapshot.children) {
+
+                            val resolvedTime =
+                                getResolvedTimeValue(
+                                    child.child(
+                                        "resolvedTime"
+                                    )
+                                )
+
+                            if (
+                                resolvedTime < todayStart ||
+                                resolvedTime >= tomorrowStart
+                            ) {
+                                continue
+                            }
+
+                            val resolvedBy =
+                                child.child(
+                                    "resolvedBy"
+                                ).getValue(
+                                    String::class.java
+                                ) ?: ""
+
+                            val assignedTo =
+                                child.child(
+                                    "assignedTo"
+                                ).getValue(
+                                    String::class.java
+                                ) ?: ""
+
+                            /*
+                             * New records: resolvedBy.
+                             * Older records: assignedTo fallback
+                             * only when resolvedBy is empty.
+                             */
+                            val belongsToEmployee =
+                                if (
+                                    resolvedBy.isNotBlank()
+                                ) {
+                                    resolvedBy.equals(
+                                        employeeName,
+                                        true
+                                    )
+                                } else {
+                                    assignedTo.equals(
+                                        employeeName,
+                                        true
+                                    )
+                                }
+
+                            if (belongsToEmployee) {
+                                todayResolvedCount++
+                            }
+                        }
+
+                        resolvedCountText.text =
+                            todayResolvedCount.toString()
+                    }
+
+                    override fun onCancelled(
+                        error: DatabaseError
+                    ) {
+                    }
                 }
             )
     }
+
+    private fun getResolvedTimeValue(
+        snapshot: DataSnapshot
+    ): Long {
+
+        return when (
+            val value = snapshot.value
+        ) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Double -> value.toLong()
+            is Float -> value.toLong()
+            is String ->
+                value.toLongOrNull() ?: 0L
+            else -> 0L
+        }
+    }
+
+    /**
+     * Recalculate the Resolved Box exactly at the next midnight.
+     * Pending is not changed or reset here.
+     */
+    private fun scheduleCounterMidnightRefresh() {
+
+        val now =
+            java.util.Calendar.getInstance()
+
+        val nextMidnight =
+            java.util.Calendar.getInstance().apply {
+                add(
+                    java.util.Calendar.DAY_OF_YEAR,
+                    1
+                )
+                set(
+                    java.util.Calendar.HOUR_OF_DAY,
+                    0
+                )
+                set(
+                    java.util.Calendar.MINUTE,
+                    0
+                )
+                set(
+                    java.util.Calendar.SECOND,
+                    0
+                )
+                set(
+                    java.util.Calendar.MILLISECOND,
+                    0
+                )
+            }
+
+        counterMidnightHandler
+            .removeCallbacks(
+                counterMidnightRunnable
+            )
+
+        counterMidnightHandler.postDelayed(
+            counterMidnightRunnable,
+            (
+                    nextMidnight.timeInMillis -
+                            now.timeInMillis
+                    ).coerceAtLeast(1000L)
+        )
+    }
+
 
     private fun loadSavedProfileImage() {
         try {
@@ -450,6 +805,13 @@ class MainActivity : AppCompatActivity() {
                 profileImage.setImageBitmap(bitmap)
             }
         } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        counterMidnightHandler.removeCallbacks(
+            counterMidnightRunnable
+        )
+        super.onDestroy()
     }
 
     override fun onActivityResult(
