@@ -171,6 +171,15 @@ class AttendanceActivity : AppCompatActivity() {
         }
         circle.addView(ImageView(this).apply { setImageResource(R.drawable.ic_fingerprint); layoutParams = LinearLayout.LayoutParams(px(46,dp), px(46,dp)); scaleType = ImageView.ScaleType.FIT_CENTER })
         frame.addView(circle)
+
+        // Biometric icon and the main Check-In / Check-Out button use the
+        // exact same attendance action. The current state decides whether
+        // the action is Check-In or Check-Out, so tapping either control
+        // follows the same GPS + biometric verification flow.
+        frame.isClickable = true
+        frame.isFocusable = true
+        frame.setOnClickListener { handleAttendanceClick() }
+
         bioCard.addView(LinearLayout(this).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(14,dp) }; addView(frame) })
 
         tvInstruction = tv("Tap to mark Check-In\nFingerprint or Face ID required", 13f, Color.parseColor("#757575")).also {
@@ -425,7 +434,19 @@ class AttendanceActivity : AppCompatActivity() {
                 .setNegativeButton("Cancel", null).show(); return
         }
         val now = Calendar.getInstance()
+
+        // IMPORTANT: preserve the original post-close check-out behavior for an
+        // active session, but NEVER allow a new/re-check-in after office close.
+        // This guard applies to both the button and the fingerprint icon, because
+        // both ultimately call handleAttendanceClick().
         if (!isCurrentlyCheckedIn) {
+            val nowTotal = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+            val endTotal = officeEndHour * 60 + officeEndMinute
+
+            if (nowTotal >= endTotal) {
+                showInfo("Office is closed. Attendance is disabled now.")
+                return
+            }
             // officeStartHour/Minute/preShiftMinutes kept up-to-date by officeSettingsListener
             val totalMins = officeStartHour * 60 + officeStartMinute - preShiftMinutes
             val wHour = (totalMins / 60).coerceAtLeast(0)
@@ -499,13 +520,175 @@ class AttendanceActivity : AppCompatActivity() {
 
     private fun launchBiometric(checkIn: Boolean) {
         val bm = BiometricManager.from(this)
-        if (bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS) { showInfo("Biometric not set up. Add fingerprint in phone Settings."); return }
+        val authenticators =
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK
+
+        val biometricAvailable =
+            bm.canAuthenticate(authenticators) ==
+                    BiometricManager.BIOMETRIC_SUCCESS
+
+        // Fingerprint and PIN are both available. The existing Attendance UI
+        // remains unchanged; PIN is only an alternate authentication path.
+        if (!biometricAvailable) {
+            showAttendancePinDialog(checkIn)
+            return
+        }
+
         val executor = ContextCompat.getMainExecutor(this)
-        BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) { runOnUiThread { if (checkIn) saveCheckIn() else saveCheckOut() } }
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) { if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON) runOnUiThread { showInfo("Auth error: $errString") } }
-            override fun onAuthenticationFailed() { runOnUiThread { showInfo("Fingerprint not recognized. Try again.") } }
-        }).authenticate(BiometricPrompt.PromptInfo.Builder().setTitle(if (checkIn) "Check-In" else "Check-Out").setSubtitle("Place your finger").setNegativeButtonText("Cancel").setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK).build())
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(if (checkIn) "Check-In" else "Check-Out")
+            .setSubtitle("Fingerprint or PIN")
+            .setNegativeButtonText("Use PIN")
+            .setAllowedAuthenticators(authenticators)
+            .build()
+
+        BiometricPrompt(
+            this,
+            executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+
+                override fun onAuthenticationSucceeded(
+                    result: BiometricPrompt.AuthenticationResult
+                ) {
+                    runOnUiThread {
+                        if (checkIn) saveCheckIn() else saveCheckOut()
+                    }
+                }
+
+                override fun onAuthenticationError(
+                    errorCode: Int,
+                    errString: CharSequence
+                ) {
+                    when {
+                        errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON -> {
+                            // Employee explicitly selected the PIN alternative.
+                            runOnUiThread { showAttendancePinDialog(checkIn) }
+                        }
+
+                        errorCode != BiometricPrompt.ERROR_USER_CANCELED -> {
+                            runOnUiThread {
+                                showInfo("Auth error: $errString")
+                            }
+                        }
+                    }
+                }
+
+                override fun onAuthenticationFailed() {
+                    runOnUiThread {
+                        showInfo("Fingerprint not recognized. Try again.")
+                    }
+                }
+            }
+        ).authenticate(promptInfo)
+    }
+
+    /**
+     * PIN alternative for devices/employees that cannot or do not want to use
+     * fingerprint. This dialog is outside the main layout so the existing
+     * Attendance screen design remains unchanged.
+     *
+     * Firebase:
+     *   employees/{deviceId}/attendancePin
+     */
+    private fun showAttendancePinDialog(checkIn: Boolean) {
+        val pinInput = EditText(this).apply {
+            hint = "Enter PIN"
+            inputType =
+                InputType.TYPE_CLASS_NUMBER or
+                        InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            filters = arrayOf(android.text.InputFilter.LengthFilter(8))
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                px(22, resources.displayMetrics.density),
+                px(4, resources.displayMetrics.density),
+                px(22, resources.displayMetrics.density),
+                0
+            )
+            addView(pinInput)
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (checkIn) "Check-In PIN" else "Check-Out PIN")
+            .setMessage("Enter your attendance PIN to continue.")
+            .setView(container)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Submit", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val enteredPin = pinInput.text.toString().trim()
+
+                if (enteredPin.isEmpty()) {
+                    pinInput.error = "Enter your PIN"
+                    pinInput.requestFocus()
+                    return@setOnClickListener
+                }
+
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+
+                verifyAttendancePin(
+                    enteredPin = enteredPin,
+                    checkIn = checkIn,
+                    dialog = dialog,
+                    pinInput = pinInput
+                )
+            }
+        }
+
+        dialog.show()
+        dialog.window?.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+        )
+        pinInput.requestFocus()
+    }
+
+    private fun verifyAttendancePin(
+        enteredPin: String,
+        checkIn: Boolean,
+        dialog: AlertDialog,
+        pinInput: EditText
+    ) {
+        if (deviceId.isBlank()) {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+            showInfo("Employee device could not be identified.")
+            return
+        }
+
+        db.getReference("employees")
+            .child(deviceId)
+            .child("attendancePin")
+            .get()
+            .addOnSuccessListener { snapshot ->
+                val savedPin = snapshot.value?.toString()?.trim().orEmpty()
+
+                if (savedPin.isEmpty()) {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                    showInfo("Attendance PIN is not configured for this employee.")
+                    return@addOnSuccessListener
+                }
+
+                if (enteredPin == savedPin) {
+                    dialog.dismiss()
+                    if (checkIn) saveCheckIn() else saveCheckOut()
+                } else {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                    pinInput.error = "Incorrect PIN"
+                    pinInput.requestFocus()
+                }
+            }
+            .addOnFailureListener { error ->
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                showInfo(
+                    "Could not verify PIN: ${error.message ?: "unknown error"}"
+                )
+            }
     }
 
     // ─────── SAVE (No loadTodayAttendance call — listener handles update) ───────
