@@ -60,6 +60,11 @@ class AttendanceActivity : AppCompatActivity() {
     private lateinit var tvLateVal: TextView
     private lateinit var tvScoreVal: TextView
     private lateinit var sessionsContainer: LinearLayout
+    // The fingerprint icon must always mirror btnAction's enabled state.
+    // Previously it stayed clickable even when btnAction was disabled
+    // ("Attendance Complete"), so repeatedly tapping the fingerprint icon
+    // after checkout could still trigger a new session at night.
+    private lateinit var fingerprintFrame: FrameLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -176,9 +181,17 @@ class AttendanceActivity : AppCompatActivity() {
         // exact same attendance action. The current state decides whether
         // the action is Check-In or Check-Out, so tapping either control
         // follows the same GPS + biometric verification flow.
+        // FIX: the fingerprint icon must respect the SAME disabled state as
+        // btnAction — otherwise, after night checkout ("Attendance
+        // Complete" / grey button), repeatedly tapping the fingerprint icon
+        // could still start a new session even though the button was
+        // correctly disabled.
+        fingerprintFrame = frame
         frame.isClickable = true
         frame.isFocusable = true
-        frame.setOnClickListener { handleAttendanceClick() }
+        frame.setOnClickListener {
+            if (btnAction.isEnabled) handleAttendanceClick()
+        }
 
         bioCard.addView(LinearLayout(this).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.bottomMargin = px(14,dp) }; addView(frame) })
 
@@ -369,6 +382,7 @@ class AttendanceActivity : AppCompatActivity() {
                 // No sessions yet
                 btnAction.text = "Check-In"
                 setGreenBtn()
+                fingerprintFrame.isEnabled = true
                 tvInstruction.text = "Tap to mark Check-In\nFingerprint or Face ID required"
                 btnEarlyLeave.visibility = View.GONE
             }
@@ -382,12 +396,18 @@ class AttendanceActivity : AppCompatActivity() {
                     // Can re-check-in (within office hours)
                     btnAction.text = "Check-In"
                     setGreenBtn()
+                    fingerprintFrame.isEnabled = true
                     tvInstruction.text = "Welcome back! Tap to re-check-in"
                     btnEarlyLeave.visibility = View.GONE
                 } else {
                     btnAction.text = "Attendance Complete"
                     btnAction.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#9E9E9E")) }
                     btnAction.isEnabled = false
+                    // FIX: keep the fingerprint icon's enabled state in sync
+                    // with the button — this is what stops repeated
+                    // fingerprint taps from creating a new session after
+                    // night checkout / office close.
+                    fingerprintFrame.isEnabled = false
                     tvInstruction.text = "Today attendance recorded successfully"
                     btnEarlyLeave.visibility = View.GONE
                 }
@@ -397,6 +417,7 @@ class AttendanceActivity : AppCompatActivity() {
                 btnAction.text = "Check-Out"
                 btnAction.background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 12f*dp; setColor(Color.parseColor("#C62828")) }
                 btnAction.isEnabled = true
+                fingerprintFrame.isEnabled = true
                 tvInstruction.text = "Checked in! Tap to mark Check-Out"
 
                 if (isApprovedToday) {
@@ -427,6 +448,18 @@ class AttendanceActivity : AppCompatActivity() {
     // ─────── ATTENDANCE LOGIC ───────
 
     private fun handleAttendanceClick() {
+        // FIX: if the app was left open overnight, todayKey (set once in
+        // onCreate) could still point at yesterday's date. Refresh it and
+        // re-attach the listener before doing anything else, so a tap never
+        // writes a new session onto yesterday's already-closed record.
+        val actualTodayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        if (actualTodayKey != todayKey) {
+            todayKey = actualTodayKey
+            attachAttendanceListener()
+            showInfo("Date changed — refreshing today's attendance. Tap again to continue.")
+            return
+        }
+
         val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
         if (!lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) && !lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
             AlertDialog.Builder(this).setTitle("GPS Required").setMessage("Enable GPS to mark attendance.")
@@ -1098,6 +1131,15 @@ class AttendanceActivity : AppCompatActivity() {
                         container.addView(row)
                         container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
                     }
+                    // FIX (requested): total line at the bottom, like a sum
+                    // drawn under a column of figures — "Total Absent: X days".
+                    container.addView(View(this).apply {
+                        setBackgroundColor(Color.parseColor("#333333"))
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(2, dp)).also { it.topMargin = px(6, dp); it.bottomMargin = px(8, dp) }
+                    })
+                    container.addView(tv("Total Absent: ${absentList.size} days", 14f, Color.parseColor("#C62828"), bold = true).also {
+                        it.setPadding(0, 0, 0, px(6, dp))
+                    })
                 } else {
                     when (type) {
                         "Present" -> {
@@ -1118,8 +1160,20 @@ class AttendanceActivity : AppCompatActivity() {
                                 container.addView(row)
                                 container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
                             }
+                            // FIX (requested): total line at the bottom —
+                            // "Total Present: X days" for the current month
+                            // up to today's date, like a sum drawn under a
+                            // column of figures.
+                            container.addView(View(this).apply {
+                                setBackgroundColor(Color.parseColor("#333333"))
+                                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(2, dp)).also { it.topMargin = px(6, dp); it.bottomMargin = px(8, dp) }
+                            })
+                            container.addView(tv("Total Present: ${presentDays.size} days", 14f, Color.parseColor("#2E7D32"), bold = true).also {
+                                it.setPadding(0, 0, 0, px(6, dp))
+                            })
                         }
                         "Late" -> {
+                            var totalLateMinsThisMonth = 0
                             allRecords.filter { it.status == "LATE" }.sortedBy { it.date }.forEach { rec ->
                                 count++
                                 val dateFmt = try { val p = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(rec.date); SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(p!!) } catch (e: Exception) { rec.date }
@@ -1127,6 +1181,7 @@ class AttendanceActivity : AppCompatActivity() {
                                 val ciMins = parseTimeMins(rec.ci)
                                 val officeMins = officeStartHour * 60 + officeStartMinute + gracePeriodMinutes
                                 val lateMins = if (ciMins > officeMins) ciMins - officeMins else 0
+                                totalLateMinsThisMonth += lateMins
                                 val lateHours = lateMins / 60
                                 val lateRemMins = lateMins % 60
                                 val lateText = when {
@@ -1144,6 +1199,20 @@ class AttendanceActivity : AppCompatActivity() {
                                 container.addView(row)
                                 container.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1) })
                             }
+                            // FIX (requested): total line at the bottom —
+                            // "Total Late Hours: Xh Ym" summed across every
+                            // late day this month, like a sum drawn under a
+                            // column of figures. (Rupee deduction intentionally
+                            // left out for now, per instruction — hours only.)
+                            val totalH = totalLateMinsThisMonth / 60
+                            val totalM = totalLateMinsThisMonth % 60
+                            container.addView(View(this).apply {
+                                setBackgroundColor(Color.parseColor("#333333"))
+                                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(2, dp)).also { it.topMargin = px(6, dp); it.bottomMargin = px(8, dp) }
+                            })
+                            container.addView(tv("Total Late Hours: ${totalH}h ${totalM}m", 14f, Color.parseColor("#E65100"), bold = true).also {
+                                it.setPadding(0, 0, 0, px(6, dp))
+                            })
                         }
                         else -> {
                             // Score - show each day summary
@@ -1177,6 +1246,29 @@ class AttendanceActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // FIX: once the fingerprint icon is disabled at night, a disabled
+        // view never fires its click listener again — so the previous
+        // day-rollover check inside handleAttendanceClick() could never run
+        // if the app was simply left open/backgrounded overnight instead of
+        // being closed and reopened. onResume() fires every time the app
+        // comes back to the foreground (unlock, app switch, reopen), so this
+        // is the reliable place to detect "it's a new day" and refresh
+        // state — re-attaching today's listener re-enables both the button
+        // and the fingerprint icon together, at the exact pre-shift time
+        // configured in Office Settings (grace/pre-shift/post-shift minutes
+        // are untouched and still drive that calculation exactly as before).
+        val actualTodayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        if (actualTodayKey != todayKey) {
+            todayKey = actualTodayKey
+            attachAttendanceListener()
+        } else {
+            // Same day: re-run the state calculation in case office-close /
+            // pre-shift-open time boundaries were crossed while the app was
+            // in the background (e.g. screen was locked overnight but the
+            // app process stayed alive).
+            updateUI()
+        }
+
         val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
         if (prefs.getString("approvedLeaveDate", "") == todayKey) {
             earlyLeaveApproved = true
