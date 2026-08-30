@@ -27,6 +27,17 @@ class AttendanceActivity : AppCompatActivity() {
     private var complaintAddress = ""
     private var preShiftMinutes = 60
     private var complaintRadiusMeters = 500.0
+    // FIX (requested): when MainActivity force-launches this screen during
+    // the morning Pre-Shift Window (before the employee has checked in),
+    // it passes this extra = true. While true and no check-in exists yet
+    // today, the back button (both the header arrow and the system back
+    // press) is locked so the employee cannot skip straight to the
+    // complaints dashboard without completing biometric/PIN attendance.
+    // A normal manual open later in the day never sets this, so normal
+    // behavior (free back navigation) is unaffected.
+    private var isForcedMorningCheckIn = false
+    private var autoReturnedAfterForcedCheckIn = false
+    private lateinit var backButton: ImageButton
 
     private var officeStartHour = 10; private var officeStartMinute = 0
     private var officeEndHour = 22; private var officeEndMinute = 0
@@ -71,6 +82,7 @@ class AttendanceActivity : AppCompatActivity() {
         deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
         employeeName = getSharedPreferences("employee_session", Context.MODE_PRIVATE).getString("employee_name", "") ?: ""
         complaintAddress = intent.getStringExtra("complaintAddress") ?: ""
+        isForcedMorningCheckIn = intent.getBooleanExtra("forcedMorningCheckIn", false)
         todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
 
         if (employeeName.isEmpty()) {
@@ -101,12 +113,19 @@ class AttendanceActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#0D2E5C"))
             setPadding(px(16,dp), px(48,dp), px(16,dp), px(16,dp))
         }
-        ImageButton(this).apply {
+        backButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_revert); background = null
             setColorFilter(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(px(28,dp), px(28,dp))
-            setOnClickListener { finish() }
-        }.also { header.addView(it) }
+            setOnClickListener {
+                if (isForcedMorningCheckIn && sessions.isEmpty()) {
+                    showInfo("Please mark your attendance (Check-In) before continuing.")
+                } else {
+                    finish()
+                }
+            }
+        }
+        header.addView(backButton)
 
         val titleBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -308,6 +327,16 @@ class AttendanceActivity : AppCompatActivity() {
         renderSessions()
         checkApprovedLeave()
         loadMonthlyStats()
+
+        // FIX (requested): once the employee's forced morning check-in has
+        // actually completed (a real session now exists today), briefly
+        // show the confirmed "Checked in!" state, then automatically return
+        // to MainActivity's dashboard — no manual back-press needed. Guarded
+        // so this only fires once per screen instance.
+        if (isForcedMorningCheckIn && sessions.isNotEmpty() && !autoReturnedAfterForcedCheckIn) {
+            autoReturnedAfterForcedCheckIn = true
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ finish() }, 900)
+        }
     }
 
     private fun renderSessions() {
@@ -1243,6 +1272,18 @@ class AttendanceActivity : AppCompatActivity() {
     }
 
     // ─────── HELPERS ───────
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        // FIX (requested): system/gesture back press must be blocked the
+        // same way the header back button is, while a forced morning
+        // check-in is still pending.
+        if (isForcedMorningCheckIn && sessions.isEmpty()) {
+            showInfo("Please mark your attendance (Check-In) before continuing.")
+            return
+        }
+        super.onBackPressed()
+    }
 
     override fun onResume() {
         super.onResume()

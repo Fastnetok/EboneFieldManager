@@ -119,16 +119,10 @@ class MainActivity : AppCompatActivity() {
         hasProceeded = true
         VersionChecker.checkForUpdate(this)
 
-        // FIX (requested): if it's currently the Pre-Shift Window (the
-        // early-arrival grace time before office start, e.g. "office opens
-        // at 10, pre-shift window is 1 hour, so 9:00–10:00 is allowed early
-        // check-in") AND the employee hasn't checked in yet today, send them
-        // straight to the Attendance screen instead of the complaints
-        // dashboard — so they can't casually browse complaints first thing
-        // in the morning while skipping biometric attendance. This is only
-        // forced ONCE per day (per the confirmed behavior); after that,
-        // or once they've checked in, the normal dashboard always shows.
-        checkForcedAttendanceRedirect()
+        // NOTE: the Pre-Shift Window forced-attendance check used to run
+        // only here (cold start). It has moved to onResume() — see the FIX
+        // note there — so it also re-evaluates when the app is simply
+        // resumed from the background instead of being freshly opened.
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
@@ -424,6 +418,18 @@ class MainActivity : AppCompatActivity() {
         isAppInForeground = true
         if (hasProceeded) {
             refreshDashboard()
+            // FIX (root cause of the 9:18 test not triggering): this now
+            // runs on every onResume() — cold start, resuming from the
+            // background, or coming back from another screen — instead of
+            // only once at cold start. That's what makes it catch the
+            // moment the Pre-Shift Window actually opens even if the
+            // employee already had the app open before that time and
+            // simply resumed it, rather than force-closing and reopening.
+            // The SharedPreferences date-flag inside the function still
+            // guarantees this only actually forces the Attendance screen
+            // ONCE per day — repeated onResume calls after that are cheap
+            // no-ops.
+            checkForcedAttendanceRedirect()
         }
         // Catches the case where the user granted Location via Settings
         // while the app was paused/blocked on the gate screen.
@@ -818,10 +824,11 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
-    // Prevents this check from re-running multiple times within the same
-    // app session (e.g. if proceedWithNormalStartup() is called again after
-    // a permission grant).
-    private var forcedAttendanceCheckDone = false
+    // Only prevents two overlapping async checks from running at the same
+    // time (e.g. rapid onResume calls) — it is NOT a permanent one-shot
+    // block. The actual "only force once per day" rule is enforced by the
+    // persisted SharedPreferences date-flag inside the function itself.
+    private var forcedAttendanceCheckInProgress = false
 
     /**
      * FIX (requested): forces the Attendance screen to open first thing in
@@ -832,22 +839,21 @@ class MainActivity : AppCompatActivity() {
      *   2. The employee has NOT checked in yet today.
      * Office start time and Pre-Shift Window minutes both come straight
      * from Firebase "officeSettings" — exactly what Admin sets in the
-     * Office Hours dialog (now made variable there), so this always
-     * follows whatever schedule Admin configures, with no separate rule.
+     * Office Timings screen — so this always follows whatever schedule
+     * Admin configures, with no separate rule.
+     *
+     * Called from onResume() (see FIX note there) so it re-evaluates the
+     * instant the window opens, even if the app was already open in the
+     * background rather than being freshly launched at that moment.
      */
     private fun checkForcedAttendanceRedirect() {
-        if (forcedAttendanceCheckDone) return
-        forcedAttendanceCheckDone = true
+        if (forcedAttendanceCheckInProgress) return
 
         val todayKey = java.text.SimpleDateFormat(
             "yyyy-MM-dd", java.util.Locale.getDefault()
         ).format(java.util.Date())
 
-        val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
-        // Already forced once today — never force again today, regardless
-        // of whether the employee actually completed check-in or not.
-        if (prefs.getString("forcedAttendanceRedirectDate", "") == todayKey) return
-
+        forcedAttendanceCheckInProgress = true
         val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
 
         FirebaseDatabase.getInstance().getReference("officeSettings").get()
@@ -862,8 +868,24 @@ class MainActivity : AppCompatActivity() {
                 val windowOpenTotal = officeStartTotal - preShiftMinutes
 
                 val inPreShiftWindow = nowTotal in windowOpenTotal until officeStartTotal
-                if (!inPreShiftWindow) return@addOnSuccessListener
+                if (!inPreShiftWindow) {
+                    forcedAttendanceCheckInProgress = false
+                    return@addOnSuccessListener
+                }
 
+                // FIX (root cause of "closed the app without checking in,
+                // reopened, and the dashboard showed instead"): there is no
+                // persisted "already shown today" flag anymore. The ONLY
+                // thing that suppresses this forced redirect is an ACTUAL
+                // completed check-in for today (checked live from Firebase
+                // below). This means: as long as check-in has NOT happened,
+                // opening/reopening/force-closing the app any number of
+                // times during the Pre-Shift Window will keep forcing the
+                // Attendance screen every time. The moment check-in
+                // succeeds, hasCheckedInToday becomes true and this stops
+                // firing for the rest of the day automatically — matching
+                // "sirf ek baar jab tak check-in na ho jaye, uske baad
+                // normal" exactly.
                 FirebaseDatabase.getInstance().getReference("attendance")
                     .child(androidId).child(todayKey).get()
                     .addOnSuccessListener { attSnap ->
@@ -875,15 +897,26 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             (attSnap.child("checkInTime").value?.toString() ?: "").isNotEmpty()
                         }
-                        if (hasCheckedInToday) return@addOnSuccessListener
+                        forcedAttendanceCheckInProgress = false
+                        if (hasCheckedInToday) {
+                            return@addOnSuccessListener
+                        }
 
-                        // Mark as shown for today BEFORE launching, so this
-                        // never forces a second time today even if the
-                        // employee backs out without checking in.
-                        prefs.edit().putString("forcedAttendanceRedirectDate", todayKey).apply()
-                        startActivity(Intent(this, AttendanceActivity::class.java))
+                        val intent = Intent(this, AttendanceActivity::class.java)
+                        // FIX (requested): tells AttendanceActivity this is
+                        // the forced morning launch, so it locks the back
+                        // button / system back press until the employee
+                        // actually completes Check-In (biometric or PIN),
+                        // then auto-returns to this dashboard. A normal
+                        // manual open of AttendanceActivity later in the day
+                        // (via the dashboard's fingerprint button) does NOT
+                        // set this extra, so it behaves exactly as before.
+                        intent.putExtra("forcedMorningCheckIn", true)
+                        startActivity(intent)
                     }
+                    .addOnFailureListener { forcedAttendanceCheckInProgress = false }
             }
+            .addOnFailureListener { forcedAttendanceCheckInProgress = false }
     }
 
     override fun onDestroy() {
