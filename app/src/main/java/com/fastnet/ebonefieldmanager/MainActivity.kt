@@ -119,6 +119,17 @@ class MainActivity : AppCompatActivity() {
         hasProceeded = true
         VersionChecker.checkForUpdate(this)
 
+        // FIX (requested): if it's currently the Pre-Shift Window (the
+        // early-arrival grace time before office start, e.g. "office opens
+        // at 10, pre-shift window is 1 hour, so 9:00–10:00 is allowed early
+        // check-in") AND the employee hasn't checked in yet today, send them
+        // straight to the Attendance screen instead of the complaints
+        // dashboard — so they can't casually browse complaints first thing
+        // in the morning while skipping biometric attendance. This is only
+        // forced ONCE per day (per the confirmed behavior); after that,
+        // or once they've checked in, the normal dashboard always shows.
+        checkForcedAttendanceRedirect()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
                     this,
@@ -805,6 +816,74 @@ class MainActivity : AppCompatActivity() {
                 profileImage.setImageBitmap(bitmap)
             }
         } catch (_: Exception) {}
+    }
+
+    // Prevents this check from re-running multiple times within the same
+    // app session (e.g. if proceedWithNormalStartup() is called again after
+    // a permission grant).
+    private var forcedAttendanceCheckDone = false
+
+    /**
+     * FIX (requested): forces the Attendance screen to open first thing in
+     * the morning — but ONLY once per day, and ONLY when both are true:
+     *   1. The current time falls inside the Pre-Shift Window (the early
+     *      grace period before office start, e.g. office starts at 10:00
+     *      and Pre-Shift Window is 60 min -> window is 9:00–10:00).
+     *   2. The employee has NOT checked in yet today.
+     * Office start time and Pre-Shift Window minutes both come straight
+     * from Firebase "officeSettings" — exactly what Admin sets in the
+     * Office Hours dialog (now made variable there), so this always
+     * follows whatever schedule Admin configures, with no separate rule.
+     */
+    private fun checkForcedAttendanceRedirect() {
+        if (forcedAttendanceCheckDone) return
+        forcedAttendanceCheckDone = true
+
+        val todayKey = java.text.SimpleDateFormat(
+            "yyyy-MM-dd", java.util.Locale.getDefault()
+        ).format(java.util.Date())
+
+        val prefs = getSharedPreferences("attendance_prefs", Context.MODE_PRIVATE)
+        // Already forced once today — never force again today, regardless
+        // of whether the employee actually completed check-in or not.
+        if (prefs.getString("forcedAttendanceRedirectDate", "") == todayKey) return
+
+        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+
+        FirebaseDatabase.getInstance().getReference("officeSettings").get()
+            .addOnSuccessListener { officeSnap ->
+                val startHour = (officeSnap.child("startHour").value as? Long)?.toInt() ?: 10
+                val startMinute = (officeSnap.child("startMinute").value as? Long)?.toInt() ?: 0
+                val preShiftMinutes = (officeSnap.child("preShiftMinutes").value as? Long)?.toInt() ?: 60
+
+                val now = java.util.Calendar.getInstance()
+                val nowTotal = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+                val officeStartTotal = startHour * 60 + startMinute
+                val windowOpenTotal = officeStartTotal - preShiftMinutes
+
+                val inPreShiftWindow = nowTotal in windowOpenTotal until officeStartTotal
+                if (!inPreShiftWindow) return@addOnSuccessListener
+
+                FirebaseDatabase.getInstance().getReference("attendance")
+                    .child(androidId).child(todayKey).get()
+                    .addOnSuccessListener { attSnap ->
+                        val sessSnap = attSnap.child("sessions")
+                        val hasCheckedInToday = if (sessSnap.exists()) {
+                            sessSnap.children.any {
+                                (it.child("checkInTime").value?.toString() ?: "").isNotEmpty()
+                            }
+                        } else {
+                            (attSnap.child("checkInTime").value?.toString() ?: "").isNotEmpty()
+                        }
+                        if (hasCheckedInToday) return@addOnSuccessListener
+
+                        // Mark as shown for today BEFORE launching, so this
+                        // never forces a second time today even if the
+                        // employee backs out without checking in.
+                        prefs.edit().putString("forcedAttendanceRedirectDate", todayKey).apply()
+                        startActivity(Intent(this, AttendanceActivity::class.java))
+                    }
+            }
     }
 
     override fun onDestroy() {
