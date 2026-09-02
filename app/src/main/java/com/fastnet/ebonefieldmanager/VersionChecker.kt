@@ -19,16 +19,6 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.concurrent.thread
 
-/**
- * Checks GitHub Releases for a newer Ebone Field Manager version, and —
- * upgraded from the previous "open in browser" link — downloads the APK
- * INSIDE the app with a progress bar, then goes straight to the system
- * install prompt. No file sitting in Downloads, no extra manual steps.
- *
- * Android still requires one system confirmation ("Install this update?")
- * before installing any APK that didn't come from the Play Store — that
- * single tap can't be skipped, it's an OS security requirement.
- */
 object VersionChecker {
 
     private const val GITHUB_API =
@@ -84,8 +74,24 @@ object VersionChecker {
                 android.util.Log.d("GitHubUpdate", "Installed = $currentVersionName, Latest = $latestVersionName")
 
                 if (isNewerVersion(latestVersionName, currentVersionName)) {
-                    (context as? android.app.Activity)?.runOnUiThread {
-                        showUpdateDialog(context, tagName, releaseNotes, downloadUrl)
+                    val activity = context as? android.app.Activity
+                    // FIX: the background GitHub check can take 1-3+ seconds.
+                    // If the Activity that started this check has since
+                    // finished (e.g. the employee's attendance check
+                    // finished and this MainActivity called finish() to
+                    // hand off to the dashboard, or to AttendanceActivity),
+                    // trying to show a dialog on it either crashes
+                    // (WindowManager$BadTokenException) or the dialog
+                    // appears and instantly vanishes as the Activity tears
+                    // down. Skip showing it entirely in that case — the
+                    // next time the app opens and this check runs again,
+                    // it will show normally on a live Activity.
+                    if (activity != null && !activity.isFinishing && !activity.isDestroyed) {
+                        activity.runOnUiThread {
+                            if (!activity.isFinishing && !activity.isDestroyed) {
+                                showUpdateDialog(activity, tagName, releaseNotes, downloadUrl)
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -117,15 +123,20 @@ object VersionChecker {
         else
             "New version $versionName is available."
 
-        AlertDialog.Builder(context)
-            .setTitle("Update Available")
-            .setMessage(message)
-            .setCancelable(false)
-            .setPositiveButton("Update Now") { _, _ ->
-                downloadAndInstall(context, apkUrl)
-            }
-            .setNegativeButton("Later", null)
-            .show()
+        try {
+            AlertDialog.Builder(context)
+                .setTitle("Update Available")
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("Update Now") { _, _ ->
+                    downloadAndInstall(context, apkUrl)
+                }
+                .setNegativeButton("Later", null)
+                .show()
+        } catch (ignored: Exception) {
+            // Activity's window went away between the isFinishing/isDestroyed
+            // check by the caller and this call — nothing to show on.
+        }
     }
 
     /** Downloads the APK inside the app (with a progress dialog), then opens the install prompt. */
@@ -133,16 +144,19 @@ object VersionChecker {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !context.packageManager.canRequestPackageInstalls()
         ) {
-            AlertDialog.Builder(context)
-                .setTitle("Allow Installs")
-                .setMessage("Please allow this app to install updates, then tap Update Now again.")
-                .setPositiveButton("Open Settings") { _, _ ->
-                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                        .setData(Uri.parse("package:" + context.packageName))
-                    context.startActivity(intent)
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
+            try {
+                AlertDialog.Builder(context)
+                    .setTitle("Allow Installs")
+                    .setMessage("Please allow this app to install updates, then tap Update Now again.")
+                    .setPositiveButton("Open Settings") { _, _ ->
+                        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                            .setData(Uri.parse("package:" + context.packageName))
+                        context.startActivity(intent)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            } catch (ignored: Exception) {
+            }
             return
         }
 
@@ -164,7 +178,13 @@ object VersionChecker {
             .setView(container)
             .setCancelable(false)
             .create()
-        progressDialog.show()
+        try {
+            progressDialog.show()
+        } catch (e: Exception) {
+            // Couldn't attach the progress dialog (Activity's window is
+            // gone) — nothing to download for, bail out here.
+            return
+        }
 
         thread {
             try {
@@ -186,8 +206,10 @@ object VersionChecker {
                             if (totalBytes > 0) {
                                 val percent = (downloadedBytes * 100 / totalBytes).toInt()
                                 context.runOnUiThread {
-                                    progressBar.progress = percent
-                                    statusText.text = "Downloading… $percent%"
+                                    if (!context.isFinishing && !context.isDestroyed) {
+                                        progressBar.progress = percent
+                                        statusText.text = "Downloading… $percent%"
+                                    }
                                 }
                             }
                         }
@@ -195,20 +217,46 @@ object VersionChecker {
                 }
 
                 context.runOnUiThread {
-                    progressDialog.dismiss()
-                    installApk(context, apkFile)
+                    if (!context.isFinishing && !context.isDestroyed) {
+                        safeDismiss(progressDialog)
+                        installApk(context, apkFile)
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("GitHubUpdate", "Download failed", e)
                 context.runOnUiThread {
-                    progressDialog.dismiss()
-                    AlertDialog.Builder(context)
-                        .setTitle("Update Failed")
-                        .setMessage("Could not download the update. Please try again later.")
-                        .setPositiveButton("OK", null)
-                        .show()
+                    if (!context.isFinishing && !context.isDestroyed) {
+                        safeDismiss(progressDialog)
+                        try {
+                            AlertDialog.Builder(context)
+                                .setTitle("Update Failed")
+                                .setMessage("Could not download the update. Please try again later.")
+                                .setPositiveButton("OK", null)
+                                .show()
+                        } catch (ignored: Exception) {
+                            // Activity's window was torn down between the
+                            // isFinishing/isDestroyed check above and this
+                            // call — safe to ignore, there's nothing left
+                            // to show a dialog on.
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * FIX: isFinishing/isDestroyed checks alone aren't enough — there's a
+     * brief window where an Activity has been torn down (its DecorView
+     * detached from WindowManager) but those flags haven't flipped yet.
+     * Dialog.dismiss() then throws IllegalArgumentException("not attached
+     * to window manager"). Since there's nothing meaningful to do if the
+     * window is already gone, swallow it safely here instead of crashing.
+     */
+    private fun safeDismiss(dialog: AlertDialog) {
+        try {
+            if (dialog.isShowing) dialog.dismiss()
+        } catch (ignored: Exception) {
         }
     }
 
