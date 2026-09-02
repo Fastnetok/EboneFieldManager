@@ -26,24 +26,32 @@ object VersionChecker {
 
     private val client = OkHttpClient()
 
-    fun checkForUpdate(context: Context) {
+    /**
+     * onChecked(updateDialogShowing) fires once the GitHub check finishes
+     * (success or failure). updateDialogShowing = true means the "Update
+     * Available" dialog is now on screen — callers should NOT finish() the
+     * Activity while it's true, or the dialog dies with it.
+     */
+    fun checkForUpdate(context: Context, onChecked: (Boolean) -> Unit = {}) {
         android.util.Log.d("TEST_UPDATE", "checkForUpdate Called")
 
         val currentVersionName = try {
             context.packageManager
                 .getPackageInfo(context.packageName, 0)
-                .versionName ?: return
+                .versionName ?: run { onChecked(false); return }
         } catch (e: Exception) {
+            onChecked(false)
             return
         }
 
-        checkGitHubRelease(context, currentVersionName)
+        checkGitHubRelease(context, currentVersionName, onChecked)
     }
 
-    private fun checkGitHubRelease(context: Context, currentVersionName: String) {
+    private fun checkGitHubRelease(context: Context, currentVersionName: String, onChecked: (Boolean) -> Unit) {
         android.util.Log.d("GitHubUpdate", "checkGitHubRelease Started")
 
         thread {
+            var dialogWillShow = false
             try {
                 val request = Request.Builder().url(GITHUB_API).build()
                 val response = client.newCall(request).execute()
@@ -75,18 +83,16 @@ object VersionChecker {
 
                 if (isNewerVersion(latestVersionName, currentVersionName)) {
                     val activity = context as? android.app.Activity
-                    // FIX: the background GitHub check can take 1-3+ seconds.
-                    // If the Activity that started this check has since
-                    // finished (e.g. the employee's attendance check
-                    // finished and this MainActivity called finish() to
-                    // hand off to the dashboard, or to AttendanceActivity),
-                    // trying to show a dialog on it either crashes
-                    // (WindowManager$BadTokenException) or the dialog
-                    // appears and instantly vanishes as the Activity tears
-                    // down. Skip showing it entirely in that case — the
-                    // next time the app opens and this check runs again,
-                    // it will show normally on a live Activity.
+                    // FIX (root cause of the popup vanishing): MainActivity
+                    // used to call finish() right after starting this check,
+                    // without waiting for it. The GitHub network call takes
+                    // 1-3+ seconds, so by the time it returned, MainActivity
+                    // was already torn down and the dialog died with it.
+                    // onChecked(true) below tells the caller "hold off on
+                    // finish() — a dialog is showing" so this can no longer
+                    // happen.
                     if (activity != null && !activity.isFinishing && !activity.isDestroyed) {
+                        dialogWillShow = true
                         activity.runOnUiThread {
                             if (!activity.isFinishing && !activity.isDestroyed) {
                                 showUpdateDialog(activity, tagName, releaseNotes, downloadUrl)
@@ -96,6 +102,8 @@ object VersionChecker {
                 }
             } catch (e: Exception) {
                 android.util.Log.e("GitHubUpdate", "Error", e)
+            } finally {
+                onChecked(dialogWillShow)
             }
         }
     }
@@ -112,6 +120,11 @@ object VersionChecker {
         return false
     }
 
+    // Set by MainActivity right after checkForUpdate() reports a dialog is
+    // showing. Called when that dialog is dismissed (Later / Update Now /
+    // download finished) so the caller knows it's now safe to finish().
+    var onDialogDismissed: (() -> Unit)? = null
+
     private fun showUpdateDialog(
         context: android.app.Activity,
         versionName: String,
@@ -124,7 +137,7 @@ object VersionChecker {
             "New version $versionName is available."
 
         try {
-            AlertDialog.Builder(context)
+            val dialog = AlertDialog.Builder(context)
                 .setTitle("Update Available")
                 .setMessage(message)
                 .setCancelable(false)
@@ -132,7 +145,12 @@ object VersionChecker {
                     downloadAndInstall(context, apkUrl)
                 }
                 .setNegativeButton("Later", null)
-                .show()
+                .create()
+            dialog.setOnDismissListener {
+                onDialogDismissed?.invoke()
+                onDialogDismissed = null
+            }
+            dialog.show()
         } catch (ignored: Exception) {
             // Activity's window went away between the isFinishing/isDestroyed
             // check by the caller and this call — nothing to show on.
