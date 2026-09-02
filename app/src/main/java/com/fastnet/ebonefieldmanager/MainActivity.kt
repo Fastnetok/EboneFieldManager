@@ -83,6 +83,20 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(android.graphics.Color.parseColor("#F4F6FA"))
         })
 
+        // FIX (requested): the GitHub update check must appear ABOVE even
+        // the forced biometric screen — checked here, first thing, before
+        // the attendance gate or dashboard build even start. It used to
+        // live inside proceedToBuildDashboard(), which only runs AFTER
+        // check-in is confirmed — so on a fresh open needing biometric,
+        // this MainActivity instance finish()es (to hand off to
+        // AttendanceActivity) before the GitHub network call ever
+        // returned, and the popup appeared-then-vanished with it. Calling
+        // it here means the dialog attaches to this placeholder window,
+        // which stays alive on screen the whole time this Activity exists
+        // — biometric requirement below is completely unchanged, this
+        // dialog just sits on top of whatever comes next.
+        VersionChecker.checkForUpdate(this)
+
         // HARD GATE: app does not proceed at all until Location permission
         // is granted — no dashboard, no Firebase listeners, nothing else
         // loads until the user grants it.
@@ -126,7 +140,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun proceedWithNormalStartup() {
         hasProceeded = true
-        VersionChecker.checkForUpdate(this)
+
+        // NOTE: VersionChecker.checkForUpdate(this) moved to the very top
+        // of onCreate() — see the FIX note there — so it runs once, before
+        // the attendance gate, instead of here.
 
         // FIX (dashboard-flash bug): checkForcedAttendanceRedirect() used to
         // run in parallel with (or after) building the whole dashboard UI,
