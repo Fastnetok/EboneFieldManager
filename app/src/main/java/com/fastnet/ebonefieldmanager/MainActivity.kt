@@ -85,17 +85,35 @@ class MainActivity : AppCompatActivity() {
 
         // FIX (requested): the GitHub update check must appear ABOVE even
         // the forced biometric screen — checked here, first thing, before
-        // the attendance gate or dashboard build even start. It used to
-        // live inside proceedToBuildDashboard(), which only runs AFTER
-        // check-in is confirmed — so on a fresh open needing biometric,
-        // this MainActivity instance finish()es (to hand off to
-        // AttendanceActivity) before the GitHub network call ever
-        // returned, and the popup appeared-then-vanished with it. Calling
-        // it here means the dialog attaches to this placeholder window,
-        // which stays alive on screen the whole time this Activity exists
-        // — biometric requirement below is completely unchanged, this
-        // dialog just sits on top of whatever comes next.
-        VersionChecker.checkForUpdate(this)
+        // the attendance gate or dashboard build even start.
+        //
+        // ROOT CAUSE OF THE POPUP VANISHING (finally fixed here): earlier
+        // versions called checkForUpdate(this) with NO callback, so this
+        // Activity had no way to know a dialog was about to appear — the
+        // biometric-redirect's finish() (further down) ran on its own
+        // independent timer and killed the window the dialog was attached
+        // to. Now: updateCheckPending stays true until GitHub responds,
+        // and if a dialog ends up showing, updateDialogShowing stays true
+        // until the employee dismisses it (Later / Update Now). finish()
+        // is now gated on BOTH being false — see safeFinishForAttendance().
+        VersionChecker.checkForUpdate(this) { dialogShown ->
+            updateCheckPending = false
+            updateDialogShowing = dialogShown
+            if (dialogShown) {
+                VersionChecker.onDialogDismissed = {
+                    updateDialogShowing = false
+                    // If the attendance redirect was waiting on this dialog,
+                    // do it now that the dialog is gone.
+                    if (pendingAttendanceFinish) {
+                        pendingAttendanceFinish = false
+                        finish()
+                    }
+                }
+            } else if (pendingAttendanceFinish) {
+                pendingAttendanceFinish = false
+                finish()
+            }
+        }
 
         // HARD GATE: app does not proceed at all until Location permission
         // is granted — no dashboard, no Firebase listeners, nothing else
@@ -175,6 +193,23 @@ class MainActivity : AppCompatActivity() {
     private var attendanceGateInProgress = false
     private var hasRedirectedToAttendance = false
 
+    // FIX (root cause of the update popup vanishing, finally wired
+    // end-to-end): finish() for the attendance redirect must never run
+    // while the version-check is still in flight, or while its dialog is
+    // on screen. These three fields + safeFinishForAttendance() are the
+    // single gate that enforces that.
+    private var updateCheckPending = true
+    private var updateDialogShowing = false
+    private var pendingAttendanceFinish = false
+
+    private fun safeFinishForAttendance() {
+        if (updateCheckPending || updateDialogShowing) {
+            pendingAttendanceFinish = true
+            return
+        }
+        finish()
+    }
+
     private fun gateDashboardOnAttendance(onReady: () -> Unit) {
         if (hasRedirectedToAttendance) return
         if (checkedInTodayConfirmed) {
@@ -212,7 +247,7 @@ class MainActivity : AppCompatActivity() {
                     startActivity(intent)
                     @Suppress("DEPRECATION")
                     overridePendingTransition(0, 0)
-                    finish()
+                    safeFinishForAttendance()
                 }
             }
             .addOnFailureListener {
