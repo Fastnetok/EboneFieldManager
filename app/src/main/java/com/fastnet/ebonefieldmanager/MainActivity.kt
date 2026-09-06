@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.TextView
@@ -31,6 +32,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var profileImage: ImageView
     private lateinit var customerNameText: TextView
+    private lateinit var tvLogCompany: TextView
     private lateinit var customerAddressText: TextView
     private lateinit var customerPhoneText: TextView
     private lateinit var pendingCountText: TextView
@@ -90,28 +92,36 @@ class MainActivity : AppCompatActivity() {
         // ROOT CAUSE OF THE POPUP VANISHING (finally fixed here): earlier
         // versions called checkForUpdate(this) with NO callback, so this
         // Activity had no way to know a dialog was about to appear — the
-        // biometric-redirect's finish() (further down) ran on its own
-        // independent timer and killed the window the dialog was attached
-        // to. Now: updateCheckPending stays true until GitHub responds,
-        // and if a dialog ends up showing, updateDialogShowing stays true
-        // until the employee dismisses it (Later / Update Now). finish()
-        // is now gated on BOTH being false — see safeFinishForAttendance().
+        // biometric-redirect used to fire (launching AttendanceActivity on
+        // top of this one) with no regard for whether the update dialog was
+        // still on screen. Because the dialog is attached to THIS Activity's
+        // window, the moment AttendanceActivity was launched on top of it,
+        // Android would pause/cover this window and the dialog would
+        // disappear from view — even though it was never actually
+        // dismissed. The employee would only see it again once
+        // AttendanceActivity finished and this Activity resumed.
+        //
+        // Now: updateCheckPending stays true until GitHub responds, and if
+        // a dialog ends up showing, updateDialogShowing stays true until
+        // the employee dismisses it (Later / Update Now). The attendance
+        // redirect (launching AttendanceActivity) is now gated on BOTH
+        // being false — see maybeRedirectToAttendance() /
+        // pendingAttendanceRedirect below — so the update popup always
+        // gets to show and be dismissed FIRST, whether or not the employee
+        // has completed biometric check-in yet.
         VersionChecker.checkForUpdate(this) { dialogShown ->
             updateCheckPending = false
             updateDialogShowing = dialogShown
             if (dialogShown) {
                 VersionChecker.onDialogDismissed = {
                     updateDialogShowing = false
-                    // If the attendance redirect was waiting on this dialog,
-                    // do it now that the dialog is gone.
-                    if (pendingAttendanceFinish) {
-                        pendingAttendanceFinish = false
-                        finish()
-                    }
+                    // If an attendance redirect (or the earlier finish())
+                    // was waiting on this dialog, run it now that the
+                    // dialog is gone.
+                    runPendingAttendanceActionsIfReady()
                 }
-            } else if (pendingAttendanceFinish) {
-                pendingAttendanceFinish = false
-                finish()
+            } else {
+                runPendingAttendanceActionsIfReady()
             }
         }
 
@@ -193,21 +203,53 @@ class MainActivity : AppCompatActivity() {
     private var attendanceGateInProgress = false
     private var hasRedirectedToAttendance = false
 
-    // FIX (root cause of the update popup vanishing, finally wired
-    // end-to-end): finish() for the attendance redirect must never run
-    // while the version-check is still in flight, or while its dialog is
-    // on screen. These three fields + safeFinishForAttendance() are the
-    // single gate that enforces that.
+    // FIX (update-popup-hidden-behind-attendance-screen bug): the update
+    // dialog is attached to THIS Activity's window. Launching
+    // AttendanceActivity on top of MainActivity — for ANY reason, whether
+    // check-in is already done for today or not — pauses/covers this
+    // window, which makes an in-flight or currently-showing update dialog
+    // disappear from view before the employee has dismissed it. These
+    // three fields + runPendingAttendanceActionsIfReady() /
+    // maybeRedirectToAttendance() are the single gate that stops the
+    // AttendanceActivity redirect from firing until the update check has
+    // fully finished AND (if it showed a dialog) that dialog has actually
+    // been dismissed by the employee — regardless of whether the employee
+    // has completed biometric check-in or not.
     private var updateCheckPending = true
     private var updateDialogShowing = false
-    private var pendingAttendanceFinish = false
+    private var pendingAttendanceRedirect = false
 
-    private fun safeFinishForAttendance() {
-        if (updateCheckPending || updateDialogShowing) {
-            pendingAttendanceFinish = true
-            return
+    /**
+     * Called once the update check is fully resolved (no dialog needed, or
+     * the dialog was just dismissed). If an attendance redirect was queued
+     * up while the update flow was still active, fire it now.
+     */
+    private fun runPendingAttendanceActionsIfReady() {
+        if (updateCheckPending || updateDialogShowing) return
+        if (pendingAttendanceRedirect) {
+            pendingAttendanceRedirect = false
+            launchForcedAttendanceScreen()
         }
-        finish()
+    }
+
+    private fun launchForcedAttendanceScreen() {
+        hasRedirectedToAttendance = true
+        val intent = Intent(this, AttendanceActivity::class.java)
+        intent.putExtra("forcedMorningCheckIn", true)
+        startActivity(intent)
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
+        // FIX (app-closes-after-biometric bug): MainActivity must NOT
+        // finish() itself here. AttendanceActivity (when launched with
+        // forcedMorningCheckIn) auto-finishes on its own, ~900ms after a
+        // real check-in session appears (see
+        // AttendanceActivity.processAttendanceSnapshot()). If MainActivity
+        // had already finished itself at this point, the back-stack would
+        // be empty once AttendanceActivity closes, so Android would drop
+        // the user out to the home screen instead of returning to the
+        // dashboard — forcing them to reopen the app manually. Keeping
+        // MainActivity alive (paused, in the background) means Android
+        // naturally resumes it the moment AttendanceActivity finishes.
     }
 
     private fun gateDashboardOnAttendance(onReady: () -> Unit) {
@@ -241,13 +283,20 @@ class MainActivity : AppCompatActivity() {
                     checkedInTodayConfirmed = true
                     onReady()
                 } else if (!hasRedirectedToAttendance) {
-                    hasRedirectedToAttendance = true
-                    val intent = Intent(this, AttendanceActivity::class.java)
-                    intent.putExtra("forcedMorningCheckIn", true)
-                    startActivity(intent)
-                    @Suppress("DEPRECATION")
-                    overridePendingTransition(0, 0)
-                    safeFinishForAttendance()
+                    // FIX (update-popup-hidden-behind-attendance-screen bug):
+                    // do not launch AttendanceActivity while the update
+                    // check is still running or its dialog is still on
+                    // screen — queue the redirect instead, and
+                    // runPendingAttendanceActionsIfReady() will fire it the
+                    // moment the update flow is fully done. This guarantees
+                    // the update popup is always shown (and can be
+                    // dismissed) on top, whether or not the employee has
+                    // completed biometric check-in yet.
+                    if (updateCheckPending || updateDialogShowing) {
+                        pendingAttendanceRedirect = true
+                    } else {
+                        launchForcedAttendanceScreen()
+                    }
                 }
             }
             .addOnFailureListener {
@@ -337,6 +386,7 @@ class MainActivity : AppCompatActivity() {
         profileImage = findViewById(R.id.profileImage)
         loadSavedProfileImage()
         customerNameText = findViewById(R.id.customerNameText)
+        tvLogCompany = findViewById(R.id.tvLogCompany)
         customerAddressText = findViewById(R.id.customerAddressText)
         customerPhoneText = findViewById(R.id.customerPhoneText)
         pendingCountText = findViewById(R.id.pendingCountText)
@@ -576,15 +626,19 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         isAppInForeground = true
         if (hasProceeded) {
-            // FIX (dashboard-flash bug): once check-in is confirmed for
-            // today, gateDashboardOnAttendance() is a no-op and the
-            // dashboard refreshes instantly, exactly as before. If check-in
-            // is NOT yet done (e.g. this MainActivity instance somehow
-            // still exists without check-in having happened), it locks
-            // straight to Attendance instead of showing the dashboard even
-            // for a moment. If the dashboard hasn't been built yet at all,
-            // build it fresh instead of calling refreshDashboard() on
-            // views that don't exist yet.
+            // FIX (app-closes-after-biometric bug): MainActivity is no
+            // longer finished when it redirects to AttendanceActivity (see
+            // gateDashboardOnAttendance() above), so this same MainActivity
+            // instance is the one that comes back to onResume() once
+            // AttendanceActivity finishes itself after a successful
+            // check-in. hasRedirectedToAttendance must be reset here so
+            // gateDashboardOnAttendance() re-checks Firebase instead of
+            // silently doing nothing (it used to short-circuit via the
+            // `if (hasRedirectedToAttendance) return` guard, which — with
+            // finish() removed above — would otherwise leave the employee
+            // stuck on the blank placeholder screen forever after
+            // completing the biometric).
+            hasRedirectedToAttendance = false
             gateDashboardOnAttendance {
                 if (dashboardBuilt) refreshDashboard() else proceedToBuildDashboard()
             }
@@ -706,6 +760,36 @@ class MainActivity : AppCompatActivity() {
 
                             customerNameText.text =
                                 complaint.userId
+
+                            /*
+                             * Company Badge — بالکل ProgressAdapter.kt
+                             * (Admin Panel) والا exact logic۔ Firebase ke
+                             * company field se sirf actual company show
+                             * hogi. Badge صرف "ACTIVE COMPLAINT" card کے
+                             * اندر customerNameText کے ساتھ ہے — dashboard
+                             * کے top-right corner (جو medal/rating کے لیے
+                             * محفوظ ہے) کو بالکل ٹچ نہیں کرتا۔
+                             */
+                            val company =
+                                complaint.company
+                                    .trim()
+                                    .uppercase(java.util.Locale.getDefault())
+
+                            if (company.isEmpty()) {
+
+                                tvLogCompany.visibility = View.GONE
+
+                            } else {
+
+                                tvLogCompany.text = when (company) {
+                                    "EBONE", "EBILL", "EBONE (EBILL.PK)" -> "EBONE"
+                                    "WATEEN", "WATEEN.COM" -> "WATEEN"
+                                    "ZONG", "TURBONET.ZONG.COM.PK" -> "ZONG"
+                                    else -> company
+                                }
+
+                                tvLogCompany.visibility = View.VISIBLE
+                            }
 
                             customerAddressText.text =
                                 complaint.address

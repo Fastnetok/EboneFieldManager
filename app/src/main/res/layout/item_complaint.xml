@@ -18,14 +18,39 @@
         android:layout_weight="1"
         android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/nameText"
+        <!-- Name + Dynamic Company Badge -->
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="User Name"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:textColor="#000000"/>
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/nameText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="User Name"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="#000000"/>
+
+            <TextView
+                android:id="@+id/tvLogCompany"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_log_company_badge"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:text=""
+                android:textColor="#4C5FD5"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone"/>
+
+        </LinearLayout>
 
         <TextView
             android:id="@+id/addressText"

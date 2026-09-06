@@ -28,7 +28,8 @@ data class Complaint(
 
     var seenByEmployee: Boolean = false,
 
-    var seenTime: Long = 0
+    var seenTime: Long = 0,
 
+    var company: String = ""
 
 )

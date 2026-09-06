@@ -22,6 +22,11 @@ class ComplaintAdapter(
                 R.id.nameText
             )
 
+        val tvLogCompany: TextView =
+            itemView.findViewById(
+                R.id.tvLogCompany
+            )
+
         val addressText: TextView =
             itemView.findViewById(
                 R.id.addressText
@@ -80,6 +85,33 @@ class ComplaintAdapter(
 
         holder.nameText.text =
             complaint.userId
+
+        /*
+         * Company Badge — بالکل ProgressAdapter.kt (Admin Panel)
+         * والا exact logic۔ Firebase ke company field se sirf
+         * actual company show hogi. Agar company purani complaint
+         * mein maujood nahi hai to badge hide rahega.
+         */
+        val company =
+            complaint.company
+                .trim()
+                .uppercase(java.util.Locale.getDefault())
+
+        if (company.isEmpty()) {
+
+            holder.tvLogCompany.visibility = View.GONE
+
+        } else {
+
+            holder.tvLogCompany.text = when (company) {
+                "EBONE", "EBILL", "EBONE (EBILL.PK)" -> "EBONE"
+                "WATEEN", "WATEEN.COM" -> "WATEEN"
+                "ZONG", "TURBONET.ZONG.COM.PK" -> "ZONG"
+                else -> company
+            }
+
+            holder.tvLogCompany.visibility = View.VISIBLE
+        }
 
         holder.addressText.text =
             complaint.address
