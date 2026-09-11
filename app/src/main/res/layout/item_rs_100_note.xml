@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="55dp"
+    android:layout_height="28dp"
+    android:background="@drawable/bg_rs_100_note"
+    android:elevation="3dp"
+    android:padding="2dp">
+
+    <!-- Quaid-e-Azam placeholder (Right side like the image) -->
+    <View
+        android:layout_width="15dp"
+        android:layout_height="20dp"
+        android:layout_gravity="center_vertical|end"
+        android:layout_marginEnd="4dp"
+        android:background="#EC407A"
+        android:alpha="0.4" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="2dp"
+        android:text="100"
+        android:textColor="#880E4F"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="2dp"
+        android:text="روپیہ"
+        android:textColor="#880E4F"
+        android:textSize="7sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="20dp"
+        android:text="RS"
+        android:textColor="#880E4F"
+        android:textSize="8sp" />
+
+</FrameLayout>
