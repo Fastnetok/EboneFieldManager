@@ -136,77 +136,96 @@
         </LinearLayout>
 
         <!-- ACTIVE COMPLAINT -->
-        <LinearLayout
+        <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
             android:background="@drawable/premium_card"
-            android:elevation="4dp"
-            android:orientation="vertical"
-            android:padding="18dp">
+            android:elevation="4dp">
 
-            <TextView
-                android:id="@+id/customerIssueText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="ACTIVE COMPLAINT"
-                android:textColor="#D00000"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <!-- Customer Name + Dynamic Company Badge -->
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+            <!-- RS 100 WALLET CONTAINER - Moved down and adjusted -->
+            <FrameLayout
+                android:id="@+id/giftBoxContainer"
+                android:layout_width="100dp"
+                android:layout_height="80dp"
+                android:layout_alignParentEnd="true"
+                android:layout_alignParentTop="true"
                 android:layout_marginTop="12dp"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:layout_marginEnd="12dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="18dp">
 
                 <TextView
-                    android:id="@+id/customerNameText"
+                    android:id="@+id/customerIssueText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="No Complaint"
-                    android:textColor="#111111"
-                    android:textSize="20sp"
+                    android:text="ACTIVE COMPLAINT"
+                    android:textColor="#D00000"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/tvLogCompany"
+                <!-- Customer Name + Dynamic Company Badge -->
+                <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:background="@drawable/bg_log_company_badge"
-                    android:paddingStart="8dp"
-                    android:paddingEnd="8dp"
-                    android:paddingTop="2dp"
-                    android:paddingBottom="2dp"
-                    android:text=""
-                    android:textColor="#4C5FD5"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/customerNameText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="No Complaint"
+                        android:textColor="#111111"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvLogCompany"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_log_company_badge"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="8dp"
+                        android:paddingTop="2dp"
+                        android:paddingBottom="2dp"
+                        android:text=""
+                        android:textColor="#4C5FD5"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/customerAddressText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="-"
+                    android:textColor="#444444"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/customerPhoneText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="-"
+                    android:textColor="#444444"
+                    android:textSize="15sp" />
 
             </LinearLayout>
-
-            <TextView
-                android:id="@+id/customerAddressText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="-"
-                android:textColor="#444444"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/customerPhoneText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="-"
-                android:textColor="#444444"
-                android:textSize="15sp" />
-        </LinearLayout>
+        </RelativeLayout>
 
         <!-- BUTTONS -->
         <LinearLayout

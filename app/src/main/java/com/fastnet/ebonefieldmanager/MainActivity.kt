@@ -10,8 +10,10 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -21,6 +23,7 @@ import java.io.InputStream
 import android.Manifest
 import android.os.Build
 import android.content.pm.PackageManager
+import android.view.Gravity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.firebase.database.DataSnapshot
@@ -39,6 +42,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var resolvedCountText: TextView
     private lateinit var liveLocationText: TextView
     private var currentComplaint: Complaint? = null
+
+    // NEW CONNECTION GIFT BOX — now shows Pakistani 100 Rupee notes
+    // based on the count at officeSettings/new_connections/gift_box
+    private var giftBoxContainer: FrameLayout? = null
 
     private var lastSeenComplaintId: String? = null
 
@@ -372,6 +379,7 @@ class MainActivity : AppCompatActivity() {
                     EmployeeSession.setEmployeeName(employeeName)
                     refreshDashboard()
                     FirebaseTokenManager.saveToken(this)
+                    setupNewConnectionGiftBox(employeeName)
                 }
             }
 
@@ -392,6 +400,15 @@ class MainActivity : AppCompatActivity() {
         pendingCountText = findViewById(R.id.pendingCountText)
         resolvedCountText = findViewById(R.id.resolvedCountText)
         liveLocationText = findViewById(R.id.liveLocationText)
+
+        // NEW CONNECTION GIFT BOX — hidden by default, Firebase listener
+        // (setupNewConnectionGiftBox) controls its visibility. Totally
+        // separate from Active Complaint / Resolved Log below.
+        giftBoxContainer = findViewById(R.id.giftBoxContainer)
+        giftBoxContainer?.visibility = View.GONE
+        giftBoxContainer?.setOnClickListener {
+            startActivity(Intent(this, NewConnectionActivity::class.java))
+        }
 
         /*
          * PENDING BOX
@@ -678,6 +695,74 @@ class MainActivity : AppCompatActivity() {
             .setValue(com.google.firebase.database.ServerValue.TIMESTAMP)
 
         lastSeenComplaintId = complaint.complaintId
+    }
+
+    /*
+     * NEW CONNECTION GIFT BOX
+     *
+     * Totally separate from Dashboard/Active Complaint/Resolved.
+     * Only toggles giftBoxIcon visibility based on whether this
+     * employee currently has any pending New Connection items at
+     * officeSettings/new_connections/gift_box/{EmployeeName}/
+     */
+    private fun setupNewConnectionGiftBox(employeeName: String) {
+        FirebaseDatabase.getInstance()
+            .getReference("officeSettings/new_connections/gift_box")
+            .child(employeeName)
+            .addValueEventListener(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val count = if (snapshot.exists()) snapshot.childrenCount.toInt() else 0
+                    if (count > 0) {
+                        giftBoxContainer?.visibility = View.VISIBLE
+                        updateNoteDisplay(giftBoxContainer, count)
+                    } else {
+                        giftBoxContainer?.visibility = View.GONE
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            })
+    }
+
+    private fun updateNoteDisplay(container: FrameLayout?, count: Int) {
+        container?.let {
+            it.removeAllViews()
+            if (count == 0) return
+
+            val inflater = LayoutInflater.from(this)
+            val density = resources.displayMetrics.density
+            
+            // 1. BACK of the wallet (Behind notes)
+            val backWallet = View(this)
+            backWallet.layoutParams = FrameLayout.LayoutParams((85 * density).toInt(), (50 * density).toInt()).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            }
+            backWallet.setBackgroundResource(R.drawable.bg_wallet_back)
+            it.addView(backWallet)
+
+            // 2. The notes (Stacked between back and front folds)
+            val maxNotes = if (count > 5) 5 else count
+            for (i in 0 until maxNotes) {
+                val noteView = inflater.inflate(R.layout.item_rs_100_note, it, false)
+                val params = FrameLayout.LayoutParams((65 * density).toInt(), (32 * density).toInt())
+                
+                params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                // Stagger them: move up and slightly sideways for each note
+                params.bottomMargin = (20 * density).toInt() + (i * 6 * density).toInt()
+                params.leftMargin = (i * 8 * density).toInt() - (15 * density).toInt()
+                
+                noteView.rotation = (-12 + (i * 6)).toFloat()
+                noteView.layoutParams = params
+                it.addView(noteView)
+            }
+            
+            // 3. FRONT of the wallet (On top of notes)
+            val frontWallet = View(this)
+            frontWallet.layoutParams = FrameLayout.LayoutParams((85 * density).toInt(), (40 * density).toInt()).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            }
+            frontWallet.setBackgroundResource(R.drawable.bg_wallet_front)
+            it.addView(frontWallet)
+        }
     }
 
     private fun refreshDashboard() {

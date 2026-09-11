@@ -67,6 +67,11 @@
 
         <activity android:name=".AttendanceActivity" android:exported="false" />
 
+        <!-- NEW CONNECTIONS SYSTEM -->
+        <activity android:name=".NewConnectionActivity" android:exported="false" />
+        <activity android:name=".NewConnectionListActivity" android:exported="false" />
+        <activity android:name=".NewConnectionHistoryActivity" android:exported="false" />
+
         <!-- COMPLAINT LIST -->
 
         <activity
