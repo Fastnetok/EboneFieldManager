@@ -118,6 +118,11 @@
         </LinearLayout>
 
         <!-- ACTIVE CONNECTION CARD (Dashboard Style) -->
+        <!-- CHANGED: removed the "ACTIVE CONNECTION" title — the
+             "NEW CONNECTIONS" header above already labels this screen,
+             so it was redundant. The customer details now start right
+             at the top of the card, freeing up more room below for the
+             comments text to be fully visible without extra scrolling. -->
         <RelativeLayout
             android:id="@+id/ncActiveCard"
             android:layout_width="match_parent"
@@ -127,21 +132,10 @@
             android:elevation="4dp"
             android:padding="18dp">
 
-            <TextView
-                android:id="@+id/ncActiveTitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="ACTIVE CONNECTION"
-                android:textColor="#D00000"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_below="@id/ncActiveTitle"
-                android:orientation="vertical"
-                android:layout_marginTop="12dp">
+                android:orientation="vertical">
 
                 <TextView
                     android:id="@+id/ncCustomerNameText"

@@ -27,6 +27,18 @@ class NotificationListener(
             return
         }
 
+        // FIX: old notifications used to replay every time this service
+        // restarted (app update, phone reboot, process killed & revived)
+        // because onChildAdded fires once for EVERY existing child the
+        // first time this listener attaches — not just genuinely new
+        // ones — and there was no check here for whether an entry was
+        // actually old. Remembering the exact moment this listener
+        // starts, and only showing entries timestamped at or after that
+        // moment, means anything already sitting in the database from
+        // before this app session is skipped silently instead of being
+        // re-shown as if it just happened.
+        val listenerStartTime = System.currentTimeMillis()
+
         FirebaseDatabase
             .getInstance()
             .getReference("employeeNotifications")
@@ -39,6 +51,17 @@ class NotificationListener(
                         snapshot: DataSnapshot,
                         previousChildName: String?
                     ) {
+
+                        val timestamp =
+                            snapshot.child("timestamp")
+                                .getValue(Long::class.java)
+                                ?: 0L
+
+                        if (timestamp < listenerStartTime) {
+                            // Old notification from before this app
+                            // session started — do not show it again.
+                            return
+                        }
 
                         Log.d(
                             "NOTIFICATION_TEST",

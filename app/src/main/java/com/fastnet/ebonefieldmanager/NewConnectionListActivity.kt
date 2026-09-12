@@ -24,7 +24,7 @@ class NewConnectionListActivity : AppCompatActivity() {
 
         recyclerView = findViewById(R.id.nclRecyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
-        
+
         adapter = NewConnectionAdapter(connectionList, showActionButtons = false) { }
         recyclerView.adapter = adapter
 
@@ -64,27 +64,9 @@ class NewConnectionListActivity : AppCompatActivity() {
                     }
                     connectionList.sortBy { it.displayOrder }
                     adapter.notifyDataSetChanged()
-
-                    // Automatically mark all connections in this list as seen
-                    markAllAsSeen(connectionList)
                 }
                 override fun onCancelled(error: DatabaseError) {}
             })
-    }
-
-    private fun markAllAsSeen(list: List<NewConnection>) {
-        val employeeName = EmployeeSession.getEmployeeName()
-        val ref = db.getReference("officeSettings/new_connections/gift_box").child(employeeName)
-
-        for (conn in list) {
-            if (!conn.seenByEmployee) {
-                val updates = mapOf(
-                    "seenByEmployee" to true,
-                    "seenTime" to ServerValue.TIMESTAMP
-                )
-                ref.child(conn.id).updateChildren(updates)
-            }
-        }
     }
 
     private fun saveDisplayOrder() {

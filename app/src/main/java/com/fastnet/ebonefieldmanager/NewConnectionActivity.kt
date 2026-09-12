@@ -32,13 +32,53 @@ class NewConnectionActivity : AppCompatActivity() {
     private var activeConnection: NewConnection? = null
     private val db = FirebaseDatabase.getInstance()
 
+    // CHANGED: the gift_box listener is now attached in onStart() and
+    // detached in onStop(), instead of running for the entire lifetime
+    // of the app process. Firebase's addValueEventListener keeps
+    // delivering updates even while the Activity is only in the
+    // background (screen off / another app on top), which is exactly
+    // what caused the "seen" tick to appear on the Admin side even
+    // though the employee never actually opened this screen. Scoping
+    // the listener to onStart/onStop means it can only fire — and
+    // therefore only mark anything as seen — while this screen is
+    // genuinely on-screen and in the foreground.
+    private var giftBoxListener: ValueEventListener? = null
+    private var completedListener: ValueEventListener? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_new_connection)
 
         initViews()
         setupListeners()
+    }
+
+    override fun onStart() {
+        super.onStart()
         loadDashboardData()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val employeeName = EmployeeSession.getEmployeeName()
+
+        giftBoxListener?.let {
+            db.getReference("officeSettings/new_connections/gift_box")
+                .child(employeeName)
+                .removeEventListener(it)
+        }
+        giftBoxListener = null
+
+        completedListener?.let {
+            val calendar = Calendar.getInstance()
+            val y = java.text.SimpleDateFormat("yyyy", Locale.getDefault()).format(calendar.time)
+            val m = java.text.SimpleDateFormat("MM", Locale.getDefault()).format(calendar.time)
+            val d = java.text.SimpleDateFormat("dd", Locale.getDefault()).format(calendar.time)
+            db.getReference("officeSettings/new_connections/completed")
+                .child(y).child(m).child(d)
+                .removeEventListener(it)
+        }
+        completedListener = null
     }
 
     private fun initViews() {
@@ -99,31 +139,38 @@ class NewConnectionActivity : AppCompatActivity() {
         if (employeeName.isEmpty()) return
 
         // 1. Listen for Pending Connections (Gift Box)
-        db.getReference("officeSettings/new_connections/gift_box")
-            .child(employeeName)
-            .addValueEventListener(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val connections = mutableListOf<NewConnection>()
-                    for (child in snapshot.children) {
-                        child.getValue(NewConnection::class.java)?.let {
-                            it.id = child.key ?: ""
-                            connections.add(it)
-                        }
-                    }
-
-                    connections.sortBy { it.displayOrder }
-
-                    pendingCountText.text = connections.size.toString()
-                    updateNoteDisplay(giftBoxContainer, connections.size)
-
-                    if (connections.isNotEmpty()) {
-                        updateActiveCard(connections[0])
-                    } else {
-                        updateActiveCard(null)
+        val giftBoxListenerImpl = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val connections = mutableListOf<NewConnection>()
+                for (child in snapshot.children) {
+                    child.getValue(NewConnection::class.java)?.let {
+                        it.id = child.key ?: ""
+                        connections.add(it)
                     }
                 }
-                override fun onCancelled(error: DatabaseError) {}
-            })
+
+                connections.sortBy { it.displayOrder }
+
+                pendingCountText.text = connections.size.toString()
+                updateNoteDisplay(giftBoxContainer, connections.size)
+
+                if (connections.isNotEmpty()) {
+                    // RESTORED: automatic seen-marking of the front
+                    // (active) connection — same as the original,
+                    // stable behaviour. Safe now because this whole
+                    // listener only runs while the screen is actually
+                    // open (see onStart/onStop above).
+                    updateActiveCard(connections[0])
+                } else {
+                    updateActiveCard(null)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        giftBoxListener = giftBoxListenerImpl
+        db.getReference("officeSettings/new_connections/gift_box")
+            .child(employeeName)
+            .addValueEventListener(giftBoxListenerImpl)
 
         // 2. Listen for Installed Today (Completed)
         val calendar = Calendar.getInstance()
@@ -131,21 +178,23 @@ class NewConnectionActivity : AppCompatActivity() {
         val m = java.text.SimpleDateFormat("MM", Locale.getDefault()).format(calendar.time)
         val d = java.text.SimpleDateFormat("dd", Locale.getDefault()).format(calendar.time)
 
+        val completedListenerImpl = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                var todayCount = 0
+                for (child in snapshot.children) {
+                    val conn = child.getValue(NewConnection::class.java)
+                    if (conn?.assignedTo?.equals(employeeName, true) == true) {
+                        todayCount++
+                    }
+                }
+                installedCountText.text = todayCount.toString()
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        completedListener = completedListenerImpl
         db.getReference("officeSettings/new_connections/completed")
             .child(y).child(m).child(d)
-            .addValueEventListener(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    var todayCount = 0
-                    for (child in snapshot.children) {
-                        val conn = child.getValue(NewConnection::class.java)
-                        if (conn?.assignedTo?.equals(employeeName, true) == true) {
-                            todayCount++
-                        }
-                    }
-                    installedCountText.text = todayCount.toString()
-                }
-                override fun onCancelled(error: DatabaseError) {}
-            })
+            .addValueEventListener(completedListenerImpl)
     }
 
     private fun updateActiveCard(connection: NewConnection?) {
@@ -163,6 +212,8 @@ class NewConnectionActivity : AppCompatActivity() {
             toggleButtons(true)
 
             // SEEN STATUS — mark as seen as soon as it appears on Dashboard
+            // (restored original behaviour). Only reachable while this
+            // screen is in the foreground — see onStart/onStop.
             if (!connection.seenByEmployee) {
                 val employeeName = EmployeeSession.getEmployeeName()
                 val updates = mapOf(
@@ -225,10 +276,10 @@ class NewConnectionActivity : AppCompatActivity() {
         container?.let {
             it.removeAllViews()
             if (count == 0) return
-            
+
             val inflater = LayoutInflater.from(this)
             val density = resources.displayMetrics.density
-            
+
             // Back Wallet
             val backWallet = View(this)
             backWallet.layoutParams = FrameLayout.LayoutParams((70 * density).toInt(), (40 * density).toInt()).apply {
@@ -241,11 +292,11 @@ class NewConnectionActivity : AppCompatActivity() {
             for (i in 0 until maxNotes) {
                 val noteView = inflater.inflate(R.layout.item_rs_100_note, it, false)
                 val params = FrameLayout.LayoutParams((55 * density).toInt(), (28 * density).toInt())
-                
+
                 params.gravity = Gravity.CENTER
                 params.bottomMargin = (15 * density).toInt() + (i * 5 * density).toInt()
                 params.leftMargin = (i * 6 * density).toInt() - (10 * density).toInt()
-                
+
                 noteView.rotation = (-10 + (i * 5)).toFloat()
                 noteView.layoutParams = params
                 it.addView(noteView)

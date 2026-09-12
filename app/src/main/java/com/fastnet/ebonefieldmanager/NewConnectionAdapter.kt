@@ -1,9 +1,12 @@
 package com.fastnet.ebonefieldmanager
 
+import android.content.Intent
+import android.net.Uri
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 
@@ -20,6 +23,11 @@ class NewConnectionAdapter(
         val commentsText: TextView = itemView.findViewById(R.id.ncCommentsText)
         val installButton: Button = itemView.findViewById(R.id.ncInstallButton)
         val actionButtonsContainer: View = itemView.findViewById(R.id.ncActionButtons)
+
+        // NEW: same Call/WhatsApp icons as ComplaintAdapter's item_complaint.xml
+        val whatsappButton: ImageView = itemView.findViewById(R.id.ncWhatsappButton)
+        val callButton: ImageView = itemView.findViewById(R.id.ncCallButton)
+        val dragHandle: ImageView = itemView.findViewById(R.id.ncDragHandle)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -47,6 +55,27 @@ class NewConnectionAdapter(
             holder.installButton.setOnClickListener { onInstallSuccessful(connection) }
         } else {
             holder.actionButtonsContainer.visibility = View.GONE
+        }
+
+        // NEW: same Call/WhatsApp behaviour as ComplaintAdapter.kt
+        holder.callButton.setOnClickListener {
+            val intent = Intent(
+                Intent.ACTION_DIAL,
+                Uri.parse("tel:${connection.phoneNumber}")
+            )
+            holder.itemView.context.startActivity(intent)
+        }
+
+        holder.whatsappButton.setOnClickListener {
+            val number = connection.phoneNumber
+                .replace("+", "")
+                .replace(" ", "")
+
+            val intent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("https://wa.me/$number")
+            )
+            holder.itemView.context.startActivity(intent)
         }
     }
 
