@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var customerPhoneText: TextView
     private lateinit var pendingCountText: TextView
     private lateinit var resolvedCountText: TextView
-    private lateinit var liveLocationText: TextView
+    private var liveLocationText: TextView? = null
     private var currentComplaint: Complaint? = null
 
     // NEW: same note/wallet display already used on the New Connection
@@ -81,14 +81,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // FIX (root cause of the 2-3 second dashboard flash): the dashboard
-        // layout used to be set here immediately (setContentView), so it
-        // was already on screen before the Firebase check-in check ever
-        // came back. Now we show a blank placeholder instead, and only
-        // call setContentView(R.layout.activity_main) once we actually
-        // know the dashboard is allowed to be shown (see
-        // proceedToBuildDashboard()). Nothing about permission gating or
-        // startup order below is otherwise changed.
+        if (!RegistrationManager.isRegistered(this)) {
+            startActivity(Intent(this, RegistrationActivity::class.java))
+            finish()
+            return
+        }
+
         setContentView(android.view.View(this).apply {
             setBackgroundColor(android.graphics.Color.parseColor("#F4F6FA"))
         })
@@ -618,17 +616,23 @@ class MainActivity : AppCompatActivity() {
         val serviceIntent = Intent(this, TrackingService::class.java)
         startService(serviceIntent)
 
+        val prefs = getSharedPreferences("ebone_location_prefs", Context.MODE_PRIVATE)
+        val savedLat = prefs.getString("last_lat", null)
+        val savedLng = prefs.getString("last_lng", null)
+        if (!savedLat.isNullOrEmpty() && !savedLng.isNullOrEmpty() && dashboardBuilt) {
+            liveLocationText?.text = "LAT: $savedLat\nLNG: $savedLng"
+        }
+
         val locationHelper = LocationHelper(this)
         locationHelper.startLocationUpdates {
             runOnUiThread {
-                // FIX: startTrackingIfPermitted() can now fire before the
-                // dashboard layout exists (it no longer waits on the
-                // attendance gate — GPS tracking must keep working even
-                // while the employee is locked on the Attendance screen).
-                // liveLocationText is only initialized once
-                // proceedToBuildDashboard() has actually run.
                 if (dashboardBuilt) {
-                    liveLocationText.text = "LAT: ${it.latitude}\nLNG: ${it.longitude}"
+                    liveLocationText?.text = "LAT: ${it.latitude}\nLNG: ${it.longitude}"
+                    with(prefs.edit()) {
+                        putString("last_lat", it.latitude.toString())
+                        putString("last_lng", it.longitude.toString())
+                        apply()
+                    }
                 }
             }
         }

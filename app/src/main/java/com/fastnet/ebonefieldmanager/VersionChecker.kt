@@ -72,7 +72,8 @@ object VersionChecker {
                 }
                 val json = latestRelease ?: return@thread
                 val tagName = json.getString("tag_name")
-                val releaseNotes = json.optString("body", "")
+                val rawNotes = json.optString("body", "")
+                val releaseNotes = if (rawNotes == "null" || rawNotes.equals("null", ignoreCase = true)) "" else rawNotes
                 val downloadUrl = json.getJSONArray("assets")
                     .getJSONObject(0)
                     .getString("browser_download_url")
@@ -95,7 +96,7 @@ object VersionChecker {
                         dialogWillShow = true
                         activity.runOnUiThread {
                             if (!activity.isFinishing && !activity.isDestroyed) {
-                                showUpdateDialog(activity, tagName, releaseNotes, downloadUrl)
+                                showUpdateDialog(activity, latestVersionName, releaseNotes, downloadUrl)
                             }
                         }
                     }
