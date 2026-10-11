@@ -1342,7 +1342,14 @@ class AttendanceActivity : AppCompatActivity() {
         setPadding(px(8,dp), px(14,dp), px(8,dp), px(14,dp))
         background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = 8f*dp; setColor(Color.WHITE); setStroke(px(1,dp), Color.parseColor("#DDDDDD")) }
         isClickable = true; isFocusable = true
-        setOnClickListener { showStatDetail(label) }
+        var lastClickTime = 0L
+        setOnClickListener {
+            val now = System.currentTimeMillis()
+            if (now - lastClickTime > 600) {
+                lastClickTime = now
+                showStatDetail(label)
+            }
+        }
         addView(valView)
         addView(tv(label, 12f, Color.parseColor("#333333")).also { it.gravity = Gravity.CENTER })
     }
