@@ -19,7 +19,7 @@ class LocationHelper(
     fun startLocationUpdates(
         onLocationReceived: (Location) -> Unit
     ) {
-        // 1. Instantly load last known location so it shows LAT/LNG immediately without "GPS CONNECTING..."
+        // 1. Instantly check system LocationManager for last known location
         try {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             val gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
@@ -41,13 +41,23 @@ class LocationHelper(
             e.printStackTrace()
         }
 
+        // 2. Force an immediate fresh location fetch (Crucial when GPS is already ON beforehand)
+        fusedLocationProviderClient.getCurrentLocation(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            null
+        ).addOnSuccessListener { location ->
+            if (location != null) {
+                onLocationReceived(location)
+            }
+        }
+
         fusedLocationProviderClient.lastLocation.addOnSuccessListener { location ->
             if (location != null) {
                 onLocationReceived(location)
             }
         }
 
-        // 2. Original Normal High Accuracy Settings
+        // 3. Normal High Accuracy Continuous Updates
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
             5000
